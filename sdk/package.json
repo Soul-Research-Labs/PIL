@@ -90,7 +90,7 @@
     "url": "git+https://github.com/Soul-Research-Labs/Soul.git"
   },
   "dependencies": {
-    "commander": "^11.0.0",
+    "commander": "^14.0.3",
     "poseidon-lite": "^0.3.0",
     "viem": "^2.30.0"
   },
