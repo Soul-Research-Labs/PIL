@@ -79,7 +79,7 @@
     "@nomicfoundation/hardhat-mocha": "^3.0.9",
     "@nomicfoundation/hardhat-network-helpers": "^3.0.0",
     "@nomicfoundation/hardhat-toolbox-viem": "^5.0.1",
-    "@nomicfoundation/hardhat-verify": "^3.0.9",
+    "@nomicfoundation/hardhat-verify": "^3.0.10",
     "@nomicfoundation/hardhat-viem": "^3.0.0",
     "@nomicfoundation/ignition-core": "^3.0.0",
     "@openzeppelin/contracts": "^5.4.0",
