@@ -1,0 +1,10 @@
+# Docker ignore for web builds
+node_modules/
+.next/
+.git/
+.github/
+.env
+.env.local
+*.md
+Dockerfile
+.dockerignore

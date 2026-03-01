@@ -1,0 +1,160 @@
+{
+  "name": "zaseon-vscode",
+  "displayName": "ZASEON — AI Smart Contract Scanner",
+  "description": "Scan Solidity smart contracts for vulnerabilities with ZASEON's AI-powered 13-engine fuzzer.",
+  "version": "0.1.0",
+  "publisher": "zaseon",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zaseon/zaseon"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Testing",
+    "Other"
+  ],
+  "keywords": [
+    "solidity",
+    "smart-contract",
+    "security",
+    "audit",
+    "fuzzer",
+    "soul-protocol"
+  ],
+  "activationEvents": [
+    "onLanguage:solidity",
+    "workspaceContains:**/*.sol"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "zaseon.scanFile",
+        "title": "ZASEON: Scan Current File",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "zaseon.scanWorkspace",
+        "title": "ZASEON: Scan Workspace",
+        "icon": "$(search)"
+      },
+      {
+        "command": "zaseon.startFuzzer",
+        "title": "ZASEON: Start Soul Fuzzer Campaign",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "zaseon.showFindings",
+        "title": "ZASEON: Show Findings",
+        "icon": "$(warning)"
+      },
+      {
+        "command": "zaseon.quickFix",
+        "title": "ZASEON: Apply Auto-Fix",
+        "icon": "$(wrench)"
+      }
+    ],
+    "configuration": {
+      "title": "ZASEON",
+      "properties": {
+        "zaseon.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "ZASEON Engine API URL"
+        },
+        "zaseon.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "ZASEON API Key (optional for local)"
+        },
+        "zaseon.autoScanOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically scan Solidity files on save"
+        },
+        "zaseon.fuzzerMode": {
+          "type": "string",
+          "enum": [
+            "quick",
+            "standard",
+            "deep",
+            "exhaustive"
+          ],
+          "default": "standard",
+          "description": "Default Soul Fuzzer campaign mode"
+        },
+        "zaseon.showInlineDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show findings as inline diagnostics"
+        },
+        "zaseon.severityFilter": {
+          "type": "string",
+          "enum": [
+            "all",
+            "critical",
+            "high",
+            "medium"
+          ],
+          "default": "all",
+          "description": "Minimum severity to display"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "zaseon",
+          "title": "ZASEON",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "zaseon": [
+        {
+          "id": "zaseon.findings",
+          "name": "Findings"
+        },
+        {
+          "id": "zaseon.campaigns",
+          "name": "Fuzzer Campaigns"
+        },
+        {
+          "id": "zaseon.engines",
+          "name": "Engine Status"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "zaseon.scanFile",
+          "when": "resourceExtname == .sol",
+          "group": "zaseon"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0",
+    "eslint": "^8.57.0",
+    "@vscode/vsce": "^2.22.0"
+  },
+  "dependencies": {
+    "axios": "^1.7.0"
+  }
+}

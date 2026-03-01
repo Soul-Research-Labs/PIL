@@ -1,0 +1,243 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "CPU Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "lineWidth": 2, "fillOpacity": 15 }
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(process_cpu_seconds_total{job=\"zaseon-engine\"}[5m])",
+          "legendFormat": "engine"
+        },
+        {
+          "expr": "rate(process_cpu_seconds_total{job=\"zaseon-worker\"}[5m])",
+          "legendFormat": "worker"
+        }
+      ]
+    },
+    {
+      "title": "Memory Usage (RSS)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": { "lineWidth": 2, "fillOpacity": 15 }
+        }
+      },
+      "targets": [
+        {
+          "expr": "process_resident_memory_bytes{job=\"zaseon-engine\"}",
+          "legendFormat": "engine RSS"
+        },
+        {
+          "expr": "process_resident_memory_bytes{job=\"zaseon-worker\"}",
+          "legendFormat": "worker RSS"
+        }
+      ]
+    },
+    {
+      "title": "Open File Descriptors",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+      },
+      "targets": [
+        {
+          "expr": "process_open_fds{job=\"zaseon-engine\"}",
+          "legendFormat": "engine"
+        },
+        {
+          "expr": "process_max_fds{job=\"zaseon-engine\"}",
+          "legendFormat": "engine max"
+        }
+      ]
+    },
+    {
+      "title": "PostgreSQL Connections",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        }
+      },
+      "targets": [
+        {
+          "expr": "pg_stat_activity_count{datname=\"zaseon\"}",
+          "legendFormat": "active"
+        },
+        { "expr": "pg_settings_max_connections{}", "legendFormat": "max" },
+        {
+          "expr": "pg_stat_activity_count{datname=\"zaseon\", state=\"idle\"}",
+          "legendFormat": "idle"
+        }
+      ]
+    },
+    {
+      "title": "PostgreSQL Query Duration (p95)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "custom": { "lineWidth": 2 } }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(pg_stat_statements_seconds_bucket[5m])) * 1000",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "title": "Redis Memory",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        }
+      },
+      "targets": [
+        { "expr": "redis_memory_used_bytes", "legendFormat": "used" },
+        { "expr": "redis_memory_max_bytes", "legendFormat": "max" }
+      ]
+    },
+    {
+      "title": "Redis Hit Rate",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "green", "value": 0.9 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "redis_keyspace_hits_total / (redis_keyspace_hits_total + redis_keyspace_misses_total)",
+          "legendFormat": "hit rate"
+        }
+      ]
+    },
+    {
+      "title": "Redis Connected Clients",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "redis_connected_clients", "legendFormat": "clients" }
+      ]
+    },
+    {
+      "title": "Celery Worker Utilization",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2, "stacking": { "mode": "normal" } }
+        }
+      },
+      "targets": [
+        { "expr": "celery_tasks_active", "legendFormat": "active tasks" },
+        { "expr": "celery_tasks_reserved", "legendFormat": "reserved" },
+        { "expr": "celery_prefetch_count", "legendFormat": "prefetch" }
+      ]
+    },
+    {
+      "title": "Disk Usage",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "red", "value": 0.85 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "1 - (node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"})",
+          "legendFormat": "disk used %"
+        }
+      ]
+    },
+    {
+      "title": "Network I/O",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 6, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "Bps", "custom": { "lineWidth": 2 } }
+      },
+      "targets": [
+        {
+          "expr": "rate(node_network_receive_bytes_total{device=\"eth0\"}[5m])",
+          "legendFormat": "rx"
+        },
+        {
+          "expr": "rate(node_network_transmit_bytes_total{device=\"eth0\"}[5m])",
+          "legendFormat": "tx"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["zaseon", "infrastructure", "resources"],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" }
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "ZASEON — Infrastructure",
+  "uid": "zaseon-infra"
+}

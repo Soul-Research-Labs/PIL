@@ -1,0 +1,174 @@
+name: "ZASEON Security Scan"
+description: "Run ZASEON smart contract security scanner on your Solidity project"
+author: "ZASEON Team"
+
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  path:
+    description: "Path to Solidity files or project directory"
+    required: false
+    default: "."
+  api-key:
+    description: "ZASEON API key (required for cloud scanning)"
+    required: false
+  api-url:
+    description: "ZASEON API endpoint URL"
+    required: false
+    default: "https://api.zaseon.io"
+  severity-threshold:
+    description: "Minimum severity to report (critical, high, medium, low)"
+    required: false
+    default: "medium"
+  fail-on:
+    description: "Severity level that causes the action to fail (critical, high, medium, low, none)"
+    required: false
+    default: "high"
+  format:
+    description: "Output format (table, json, sarif)"
+    required: false
+    default: "sarif"
+  upload-sarif:
+    description: "Upload SARIF results to GitHub Advanced Security"
+    required: false
+    default: "true"
+  max-findings:
+    description: "Maximum findings to display in the summary (0 = all)"
+    required: false
+    default: "50"
+
+outputs:
+  scan-id:
+    description: "Unique scan identifier"
+  security-score:
+    description: "Security score (0-100)"
+  total-findings:
+    description: "Total number of findings"
+  critical-count:
+    description: "Number of critical findings"
+  high-count:
+    description: "Number of high findings"
+  sarif-file:
+    description: "Path to SARIF output file (if generated)"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install ZASEON CLI
+      shell: bash
+      run: |
+        pip install --quiet zaseon-cli 2>/dev/null || {
+          echo "📦 Installing ZASEON from source…"
+          pip install --quiet "${{ github.action_path }}/../../engine" 2>/dev/null || true
+        }
+
+    - name: Discover Solidity files
+      id: discover
+      shell: bash
+      run: |
+        SOL_COUNT=$(find "${{ inputs.path }}" -name "*.sol" -type f | wc -l | tr -d ' ')
+        echo "sol_count=$SOL_COUNT" >> "$GITHUB_OUTPUT"
+        echo "📂 Found $SOL_COUNT Solidity files in ${{ inputs.path }}"
+        if [ "$SOL_COUNT" -eq 0 ]; then
+          echo "::warning::No .sol files found in ${{ inputs.path }}"
+        fi
+
+    - name: Run ZASEON scan
+      id: scan
+      shell: bash
+      env:
+        ZASEON_API_KEY: ${{ inputs.api-key }}
+        ZASEON_API_URL: ${{ inputs.api-url }}
+      run: |
+        set +e
+
+        ARGS="--no-banner --quiet"
+        ARGS="$ARGS --severity ${{ inputs.severity-threshold }}"
+        ARGS="$ARGS --max-findings ${{ inputs.max-findings }}"
+
+        SARIF_FILE=""
+        if [ "${{ inputs.format }}" = "sarif" ] || [ "${{ inputs.upload-sarif }}" = "true" ]; then
+          SARIF_FILE="${{ runner.temp }}/zaseon-results.sarif"
+          zaseon scan "${{ inputs.path }}" $ARGS --format sarif -o "$SARIF_FILE"
+          SCAN_EXIT=$?
+          echo "sarif_file=$SARIF_FILE" >> "$GITHUB_OUTPUT"
+        fi
+
+        # Always generate table output for the summary
+        RESULT=$(zaseon scan "${{ inputs.path }}" $ARGS --format json 2>/dev/null || echo '{}')
+        SCAN_EXIT=${SCAN_EXIT:-$?}
+
+        # Parse results
+        SCORE=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('security_score', 0))" 2>/dev/null || echo "0")
+        TOTAL=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('findings', [])))" 2>/dev/null || echo "0")
+        CRITICAL=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(sum(1 for f in d.get('findings',[]) if f.get('severity')=='critical'))" 2>/dev/null || echo "0")
+        HIGH=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(sum(1 for f in d.get('findings',[]) if f.get('severity')=='high'))" 2>/dev/null || echo "0")
+
+        echo "security_score=$SCORE" >> "$GITHUB_OUTPUT"
+        echo "total_findings=$TOTAL" >> "$GITHUB_OUTPUT"
+        echo "critical_count=$CRITICAL" >> "$GITHUB_OUTPUT"
+        echo "high_count=$HIGH" >> "$GITHUB_OUTPUT"
+
+        # Determine pass/fail
+        FAIL_ON="${{ inputs.fail-on }}"
+        SHOULD_FAIL=0
+        if [ "$FAIL_ON" = "critical" ] && [ "$CRITICAL" -gt 0 ]; then SHOULD_FAIL=1; fi
+        if [ "$FAIL_ON" = "high" ] && [ $((CRITICAL + HIGH)) -gt 0 ]; then SHOULD_FAIL=1; fi
+        if [ "$FAIL_ON" = "medium" ] && [ "$TOTAL" -gt 0 ]; then SHOULD_FAIL=1; fi
+        if [ "$FAIL_ON" = "low" ] && [ "$TOTAL" -gt 0 ]; then SHOULD_FAIL=1; fi
+
+        echo "should_fail=$SHOULD_FAIL" >> "$GITHUB_OUTPUT"
+
+    - name: Upload SARIF to GitHub Security
+      if: inputs.upload-sarif == 'true' && steps.scan.outputs.sarif_file != ''
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif_file }}
+        category: zaseon-security-scan
+      continue-on-error: true
+
+    - name: Write job summary
+      shell: bash
+      run: |
+        SCORE="${{ steps.scan.outputs.security_score }}"
+        TOTAL="${{ steps.scan.outputs.total_findings }}"
+        CRITICAL="${{ steps.scan.outputs.critical_count }}"
+        HIGH="${{ steps.scan.outputs.high_count }}"
+
+        # Score emoji
+        if [ "$SCORE" -ge 90 ]; then GRADE="🟢 A"; fi
+        if [ "$SCORE" -ge 80 ] && [ "$SCORE" -lt 90 ]; then GRADE="🟡 B"; fi
+        if [ "$SCORE" -ge 70 ] && [ "$SCORE" -lt 80 ]; then GRADE="🟠 C"; fi
+        if [ "$SCORE" -lt 70 ]; then GRADE="🔴 F"; fi
+
+        cat >> "$GITHUB_STEP_SUMMARY" << EOF
+        ## 🛡️ ZASEON Security Scan Results
+
+        | Metric | Value |
+        |--------|-------|
+        | Security Score | **${SCORE}/100** ${GRADE:-} |
+        | Total Findings | ${TOTAL} |
+        | Critical | ${CRITICAL} |
+        | High | ${HIGH} |
+
+        EOF
+
+        if [ "$TOTAL" -gt 0 ]; then
+          echo "⚠️ Found **$TOTAL** security findings. Review the [Security tab](../security/code-scanning) for details." >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "✅ No security findings detected!" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Fail if threshold exceeded
+      if: steps.scan.outputs.should_fail == '1'
+      shell: bash
+      run: |
+        echo "::error::ZASEON scan found findings above the '${{ inputs.fail-on }}' severity threshold"
+        exit 1

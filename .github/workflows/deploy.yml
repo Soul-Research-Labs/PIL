@@ -1,0 +1,119 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+env:
+  REGISTRY: ghcr.io
+  ENGINE_IMAGE: ghcr.io/${{ github.repository }}/engine
+  WEB_IMAGE: ghcr.io/${{ github.repository }}/web
+
+jobs:
+  # ── Build & Push Docker Images ─────────────────────────────────────────
+  build-and-push:
+    name: Build & Push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata (engine)
+        id: meta-engine
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.ENGINE_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha
+
+      - name: Build & push engine
+        uses: docker/build-push-action@v5
+        with:
+          context: ./engine
+          push: true
+          tags: ${{ steps.meta-engine.outputs.tags }}
+          labels: ${{ steps.meta-engine.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract metadata (web)
+        id: meta-web
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.WEB_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha
+
+      - name: Build & push web
+        uses: docker/build-push-action@v5
+        with:
+          context: ./web
+          push: true
+          tags: ${{ steps.meta-web.outputs.tags }}
+          labels: ${{ steps.meta-web.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ vars.API_URL || 'https://api.zaseon.dev' }}
+
+  # ── Deploy to Staging ──────────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy (Staging)
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to staging
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_STAGING }}
+        run: |
+          echo "Deploying to staging..."
+          mkdir -p ~/.kube
+          echo "$KUBECONFIG_DATA" | base64 -d > ~/.kube/config
+          kubectl set image deployment/zaseon-engine engine=${{ env.ENGINE_IMAGE }}:main -n zaseon
+          kubectl set image deployment/zaseon-web web=${{ env.WEB_IMAGE }}:main -n zaseon
+          kubectl rollout status deployment/zaseon-engine -n zaseon --timeout=300s
+          kubectl rollout status deployment/zaseon-web -n zaseon --timeout=300s
+
+  # ── Deploy to Production ───────────────────────────────────────────────
+  deploy-production:
+    name: Deploy (Production)
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to production
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_PRODUCTION }}
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "Deploying $TAG to production..."
+          mkdir -p ~/.kube
+          echo "$KUBECONFIG_DATA" | base64 -d > ~/.kube/config
+          kubectl set image deployment/zaseon-engine engine=${{ env.ENGINE_IMAGE }}:$TAG -n zaseon
+          kubectl set image deployment/zaseon-web web=${{ env.WEB_IMAGE }}:$TAG -n zaseon
+          kubectl rollout status deployment/zaseon-engine -n zaseon --timeout=300s
+          kubectl rollout status deployment/zaseon-web -n zaseon --timeout=300s

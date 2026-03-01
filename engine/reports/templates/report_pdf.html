@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>ZASEON Security Audit — {{ project_name }}</title>
+    <style>
+      /* ── PDF-Optimized Styles ──────────────────────────────────────── */
+      @page {
+        size: A4;
+        margin: 20mm 15mm 25mm 15mm;
+        @top-right {
+          content: "ZASEON Security Audit — {{ project_name }}";
+          font-size: 8pt;
+          color: #94a3b8;
+        }
+        @bottom-center {
+          content: counter(page) " / " counter(pages);
+          font-size: 8pt;
+          color: #94a3b8;
+        }
+        @bottom-right {
+          content: "Confidential";
+          font-size: 8pt;
+          color: #dc2626;
+        }
+      }
+      @page :first {
+        @top-right {
+          content: none;
+        }
+        @bottom-center {
+          content: none;
+        }
+        @bottom-right {
+          content: none;
+        }
+      }
+      :root {
+        --primary: #4f46e5;
+        --bg: #ffffff;
+        --surface: #f8fafc;
+        --text: #0f172a;
+        --text-muted: #64748b;
+        --border: #e2e8f0;
+        --critical: #dc2626;
+        --high: #ea580c;
+        --medium: #ca8a04;
+        --low: #2563eb;
+        --info: #6b7280;
+        --success: #16a34a;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: "Inter", "Liberation Sans", Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.5;
+        font-size: 10pt;
+      }
+
+      /* ── Cover Page ───────────────────────────────────────────────── */
+      .cover {
+        page-break-after: always;
+        text-align: center;
+        padding-top: 120px;
+      }
+      .cover .logo {
+        font-size: 36pt;
+        font-weight: 800;
+        color: var(--primary);
+        letter-spacing: -1px;
+      }
+      .cover .subtitle {
+        font-size: 14pt;
+        color: var(--text-muted);
+        margin-top: 8px;
+      }
+      .cover .project-name {
+        font-size: 22pt;
+        font-weight: 700;
+        margin-top: 60px;
+      }
+      .cover .meta-table {
+        margin: 40px auto 0;
+        border-collapse: collapse;
+        font-size: 10pt;
+      }
+      .cover .meta-table td {
+        padding: 6px 16px;
+        text-align: left;
+      }
+      .cover .meta-table td:first-child {
+        color: var(--text-muted);
+        font-weight: 600;
+      }
+      .cover .grade-badge {
+        display: inline-block;
+        width: 80px;
+        height: 80px;
+        line-height: 80px;
+        border-radius: 50%;
+        font-size: 32pt;
+        font-weight: 800;
+        color: white;
+        margin-top: 40px;
+      }
+      .cover .score-text {
+        font-size: 14pt;
+        color: var(--text-muted);
+        margin-top: 8px;
+      }
+
+      /* ── Table of Contents ────────────────────────────────────────── */
+      .toc {
+        page-break-after: always;
+      }
+      .toc h2 {
+        font-size: 16pt;
+        margin-bottom: 16px;
+        color: var(--primary);
+      }
+      .toc-entry {
+        display: flex;
+        justify-content: space-between;
+        padding: 6px 0;
+        border-bottom: 1px dotted var(--border);
+        font-size: 10pt;
+      }
+      .toc-entry.indent {
+        padding-left: 20px;
+      }
+
+      /* ── Section Headers ──────────────────────────────────────────── */
+      .section {
+        page-break-inside: avoid;
+        margin-bottom: 24px;
+      }
+      .section-break {
+        page-break-before: always;
+      }
+      h2 {
+        font-size: 14pt;
+        font-weight: 700;
+        color: var(--primary);
+        border-bottom: 2px solid var(--primary);
+        padding-bottom: 4px;
+        margin-bottom: 12px;
+      }
+      h3 {
+        font-size: 11pt;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+
+      /* ── Score Cards ──────────────────────────────────────────────── */
+      .kpi-grid {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+      .kpi-card {
+        flex: 1;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px;
+        text-align: center;
+      }
+      .kpi-value {
+        font-size: 18pt;
+        font-weight: 800;
+      }
+      .kpi-label {
+        font-size: 8pt;
+        color: var(--text-muted);
+        text-transform: uppercase;
+      }
+
+      /* ── Severity Distribution Bar ────────────────────────────────── */
+      .severity-bar {
+        display: flex;
+        height: 20px;
+        border-radius: 4px;
+        overflow: hidden;
+        margin-bottom: 16px;
+      }
+      .severity-bar .seg {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-size: 7pt;
+        font-weight: 700;
+      }
+
+      /* ── Tables ───────────────────────────────────────────────────── */
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 16px;
+        font-size: 9pt;
+      }
+      th {
+        background: var(--surface);
+        text-align: left;
+        padding: 8px;
+        font-weight: 600;
+        border-bottom: 2px solid var(--border);
+        color: var(--text-muted);
+        font-size: 8pt;
+        text-transform: uppercase;
+      }
+      td {
+        padding: 8px;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      tr:nth-child(even) {
+        background: var(--surface);
+      }
+
+      /* ── Finding Cards ────────────────────────────────────────────── */
+      .finding {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px;
+        margin-bottom: 14px;
+        page-break-inside: avoid;
+      }
+      .finding-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      .finding-title {
+        font-weight: 700;
+        font-size: 10pt;
+      }
+      .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 7pt;
+        font-weight: 700;
+        color: white;
+        text-transform: uppercase;
+      }
+      .badge-critical {
+        background: var(--critical);
+      }
+      .badge-high {
+        background: var(--high);
+      }
+      .badge-medium {
+        background: var(--medium);
+      }
+      .badge-low {
+        background: var(--low);
+      }
+      .badge-info {
+        background: var(--info);
+      }
+      .badge-verified {
+        background: var(--success);
+      }
+
+      .finding-meta {
+        color: var(--text-muted);
+        font-size: 8pt;
+        margin-bottom: 6px;
+      }
+      .finding-desc {
+        margin-bottom: 8px;
+      }
+      .finding-remediation {
+        background: #f0fdf4;
+        border-left: 3px solid var(--success);
+        padding: 8px 12px;
+        margin-top: 8px;
+        font-size: 9pt;
+      }
+      .finding-poc {
+        background: #fef2f2;
+        border-left: 3px solid var(--critical);
+        padding: 8px 12px;
+        margin-top: 8px;
+        font-size: 9pt;
+      }
+      .code-block {
+        background: #1e293b;
+        color: #e2e8f0;
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-family: "JetBrains Mono", "Liberation Mono", monospace;
+        font-size: 8pt;
+        overflow-wrap: break-word;
+        white-space: pre-wrap;
+        margin: 6px 0;
+      }
+
+      /* ── Methodology Section ──────────────────────────────────────── */
+      .phase-table td:first-child {
+        font-weight: 700;
+        white-space: nowrap;
+        width: 80px;
+      }
+
+      /* ── Disclaimer ───────────────────────────────────────────────── */
+      .disclaimer {
+        background: #fffbeb;
+        border: 1px solid #fbbf24;
+        border-radius: 8px;
+        padding: 14px;
+        margin-top: 24px;
+        font-size: 8pt;
+        color: #92400e;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ═══ Cover Page ═════════════════════════════════════════════════ -->
+    <div class="cover">
+      <div class="logo">ZASEON</div>
+      <div class="subtitle">Smart Contract Security Audit Report</div>
+
+      <div class="project-name">{{ project_name }}</div>
+
+      <div class="grade-badge" style="background: {{ score_color }};">
+        {{ score_grade }}
+      </div>
+      <div class="score-text">
+        Security Score: {{ "%.1f"|format(security_score) }} / 100
+      </div>
+
+      <table class="meta-table">
+        <tr>
+          <td>Auditor</td>
+          <td>{{ auditor_name }}</td>
+        </tr>
+        <tr>
+          <td>Date</td>
+          <td>{{ scan_date }}</td>
+        </tr>
+        <tr>
+          <td>Scan ID</td>
+          <td><code>{{ scan_id }}</code></td>
+        </tr>
+        <tr>
+          <td>Scan Type</td>
+          <td>{{ scan_type }}</td>
+        </tr>
+        <tr>
+          <td>Duration</td>
+          <td>{{ scan_duration }}</td>
+        </tr>
+        <tr>
+          <td>Lines Scanned</td>
+          <td>{{ "{:,}"|format(total_lines) }}</td>
+        </tr>
+        {% if branding.get('company') %}
+        <tr>
+          <td>Client</td>
+          <td>{{ branding.company }}</td>
+        </tr>
+        {% endif %}
+      </table>
+    </div>
+
+    <!-- ═══ Table of Contents ══════════════════════════════════════════ -->
+    <div class="toc">
+      <h2>Table of Contents</h2>
+      <div class="toc-entry"><span>1. Executive Summary</span></div>
+      <div class="toc-entry"><span>2. Findings Overview</span></div>
+      <div class="toc-entry indent"><span>2.1 Critical Findings</span></div>
+      <div class="toc-entry indent"><span>2.2 High Findings</span></div>
+      <div class="toc-entry indent"><span>2.3 Medium Findings</span></div>
+      <div class="toc-entry indent"><span>2.4 Low Findings</span></div>
+      <div class="toc-entry indent"><span>2.5 Informational</span></div>
+      {% if gas_optimizations %}
+      <div class="toc-entry"><span>3. Gas Optimizations</span></div>
+      <div class="toc-entry"><span>4. Methodology</span></div>
+      <div class="toc-entry"><span>5. Disclaimer</span></div>
+      {% else %}
+      <div class="toc-entry"><span>3. Methodology</span></div>
+      <div class="toc-entry"><span>4. Disclaimer</span></div>
+      {% endif %}
+    </div>
+
+    <!-- ═══ 1. Executive Summary ═══════════════════════════════════════ -->
+    <div class="section-break"></div>
+    <h2>1. Executive Summary</h2>
+
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-value" style="color: {{ score_color }};">
+          {{ score_grade }}
+        </div>
+        <div class="kpi-label">Security Grade</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">{{ "%.1f"|format(security_score) }}</div>
+        <div class="kpi-label">Score / 100</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">{{ total_findings }}</div>
+        <div class="kpi-label">Total Findings</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">{{ confirmed_findings }}</div>
+        <div class="kpi-label">Verified Exploits</div>
+      </div>
+    </div>
+
+    <!-- Severity Distribution -->
+    {% set crit_n = findings_by_severity.CRITICAL | length %} {% set high_n =
+    findings_by_severity.HIGH | length %} {% set med_n =
+    findings_by_severity.MEDIUM | length %} {% set low_n =
+    findings_by_severity.LOW | length %} {% set info_n =
+    findings_by_severity.INFORMATIONAL | length %} {% if total_findings > 0 %}
+    <div class="severity-bar">
+      {% if crit_n %}
+      <div class="seg" style="background:var(--critical); flex:{{ crit_n }};">
+        {{ crit_n }} C
+      </div>
+      {% endif %} {% if high_n %}
+      <div class="seg" style="background:var(--high); flex:{{ high_n }};">
+        {{ high_n }} H
+      </div>
+      {% endif %} {% if med_n %}
+      <div class="seg" style="background:var(--medium); flex:{{ med_n }};">
+        {{ med_n }} M
+      </div>
+      {% endif %} {% if low_n %}
+      <div class="seg" style="background:var(--low); flex:{{ low_n }};">
+        {{ low_n }} L
+      </div>
+      {% endif %} {% if info_n %}
+      <div class="seg" style="background:var(--info); flex:{{ info_n }};">
+        {{ info_n }} I
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <table>
+      <tr>
+        <th>Severity</th>
+        <th>Count</th>
+        <th>Verified</th>
+      </tr>
+      {% for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"] %}
+      <tr>
+        <td><span class="badge badge-{{ sev | lower }}">{{ sev }}</span></td>
+        <td>{{ findings_by_severity[sev] | length }}</td>
+        <td>
+          {{ findings_by_severity[sev] | selectattr('verified') | list | length
+          }}
+        </td>
+      </tr>
+      {% endfor %}
+      <tr style="font-weight: 700">
+        <td>Total</td>
+        <td>{{ total_findings }}</td>
+        <td>{{ confirmed_findings }}</td>
+      </tr>
+    </table>
+
+    <p>
+      ZASEON performed a {{ scan_type }} analysis of
+      <strong>{{ project_name }}</strong>, scanning {{
+      "{:,}"|format(total_lines) }} lines of Solidity code in {{ scan_duration
+      }}. The overall security score is
+      <strong
+        >{{ "%.1f"|format(security_score) }}/100 ({{ score_grade }})</strong
+      >. {% if crit_n > 0 %}
+      <strong style="color: var(--critical)">{{ crit_n }} critical</strong>
+      finding{{ "s" if crit_n != 1 else "" }} require{{ "" if crit_n != 1 else
+      "s" }} immediate remediation. {% endif %}
+    </p>
+
+    <!-- ═══ 2. Findings Detail ═════════════════════════════════════════ -->
+    {% for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"] %} {%
+    set findings_list = findings_by_severity[sev] %} {% if findings_list %}
+    <div class="section-break"></div>
+    <h2>
+      2.{{ loop.index }} {{ sev | title }} Findings ({{ findings_list | length
+      }})
+    </h2>
+
+    {% for f in findings_list %}
+    <div class="finding">
+      <div class="finding-header">
+        <span class="finding-title">{{ f.title }}</span>
+        <span>
+          <span class="badge badge-{{ sev | lower }}">{{ sev }}</span>
+          {% if f.verified %}
+          <span class="badge badge-verified">VERIFIED</span>
+          {% endif %}
+        </span>
+      </div>
+      <div class="finding-meta">
+        {{ f.location.file }}:{{ f.location.start_line }} {% if f.cwe_id %} · {{
+        f.cwe_id }}{% endif %} {% if f.scwe_id %} · {{ f.scwe_id }}{% endif %} ·
+        Confidence: {{ "%.0f%%"|format(f.confidence * 100) }}
+      </div>
+
+      <div class="finding-desc">{{ f.description }}</div>
+
+      {% if f.location.snippet %}
+      <div class="code-block">{{ f.location.snippet }}</div>
+      {% endif %} {% if f.remediation %}
+      <div class="finding-remediation">
+        <strong>Remediation:</strong> {{ f.remediation }}
+      </div>
+      {% endif %} {% if f.proof_of_concept %}
+      <div class="finding-poc">
+        <strong>Proof of Concept:</strong>
+        <div class="code-block">{{ f.proof_of_concept }}</div>
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %} {% endif %} {% endfor %}
+
+    <!-- ═══ 3. Gas Optimizations ═══════════════════════════════════════ -->
+    {% if gas_optimizations %}
+    <div class="section-break"></div>
+    <h2>3. Gas Optimizations ({{ gas_optimizations | length }})</h2>
+    <table>
+      <tr>
+        <th>Location</th>
+        <th>Category</th>
+        <th>Description</th>
+        <th>Suggestion</th>
+        <th>Est. Gas Saved</th>
+      </tr>
+      {% for g in gas_optimizations %}
+      <tr>
+        <td><code>{{ g.location }}</code></td>
+        <td>{{ g.category }}</td>
+        <td>{{ g.description }}</td>
+        <td>{{ g.suggestion }}</td>
+        <td>
+          {{ "{:,}"|format(g.estimated_gas_saved) if g.estimated_gas_saved else
+          "N/A" }}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+
+    <!-- ═══ Methodology ════════════════════════════════════════════════ -->
+    <div class="section-break"></div>
+    <h2>{% if gas_optimizations %}4{% else %}3{% endif %}. Methodology</h2>
+
+    <p style="margin-bottom: 12px">
+      ZASEON employs an 18-phase analysis pipeline combining static analysis,
+      coverage-guided fuzzing, symbolic execution, and AI-powered intelligence:
+    </p>
+
+    <table class="phase-table">
+      <tr>
+        <th>Phase</th>
+        <th>Stage</th>
+        <th>Description</th>
+      </tr>
+      <tr>
+        <td>1–3</td>
+        <td>Pre-analysis</td>
+        <td>Static detectors, bytecode disassembly, target identification</td>
+      </tr>
+      <tr>
+        <td>4–7</td>
+        <td>Seed generation</td>
+        <td>
+          Symbolic constraint solving, taint analysis, LLM oracle, ABI encoding
+        </td>
+      </tr>
+      <tr>
+        <td>8</td>
+        <td>Fuzz loop</td>
+        <td>
+          Mutate → Forge EVM execute → coverage feedback → corpus evolution
+        </td>
+      </tr>
+      <tr>
+        <td>9–12</td>
+        <td>Supplementary</td>
+        <td>
+          Concolic boost, property testing, gas profiling, invariant synthesis
+        </td>
+      </tr>
+      <tr>
+        <td>13–16</td>
+        <td>Post-analysis</td>
+        <td>
+          State replay, exploit composition, violation minimization,
+          differential testing
+        </td>
+      </tr>
+      <tr>
+        <td>17–18</td>
+        <td>Output</td>
+        <td>PoC generation (Foundry tests), report generation</td>
+      </tr>
+    </table>
+
+    <p style="margin-top: 12px">
+      The fuzzer uses 45+ ABI-aware mutation strategies with 8 power schedules
+      (FAST, COE, LIN, QUAD, EXPLOIT, EXPLORE, MMOPT, RARE) for seed energy
+      allocation. PoC exploits are verified in isolated Docker sandboxes with no
+      network access, read-only filesystems, and dropped capabilities.
+    </p>
+
+    <!-- ═══ Disclaimer ═════════════════════════════════════════════════ -->
+    <div class="section-break"></div>
+    <h2>{% if gas_optimizations %}5{% else %}4{% endif %}. Disclaimer</h2>
+    <div class="disclaimer">
+      <p>
+        This report is generated by ZASEON, an automated smart contract security
+        scanner. While ZASEON employs advanced analysis techniques including
+        coverage-guided fuzzing, symbolic execution, and AI-powered detection,
+        <strong
+          >no automated tool can guarantee the absence of
+          vulnerabilities</strong
+        >.
+      </p>
+      <p style="margin-top: 8px">
+        This report should be used as part of a comprehensive security
+        assessment that includes manual expert review. The findings and
+        recommendations are provided as-is, without warranty of any kind. The
+        security score is a relative measure and should not be the sole basis
+        for deployment decisions.
+      </p>
+      <p style="margin-top: 8px">
+        Report generated on {{ scan_date }} · Scan ID: {{ scan_id }} · ZASEON
+        v2.1.0
+      </p>
+    </div>
+  </body>
+</html>

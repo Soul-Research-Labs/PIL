@@ -1,0 +1,214 @@
+services:
+  # ── PostgreSQL ─────────────────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: zaseon-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zaseon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-zaseon}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zaseon"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ──────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: zaseon-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-zaseon-dev-only}
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── MinIO (S3-compatible storage) ──────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: zaseon-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── MinIO bucket initialization ────────────────────────────────────────
+  minio-init:
+    image: minio/mc:latest
+    container_name: zaseon-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
+      mc mb --ignore-existing local/zaseon-repos;
+      mc mb --ignore-existing local/zaseon-reports;
+      mc mb --ignore-existing local/zaseon-artifacts;
+      echo 'Buckets created successfully';
+      "
+
+  # ── ZASEON Engine API ───────────────────────────────────────────────────
+  engine:
+    build:
+      context: ./engine
+      dockerfile: Dockerfile
+    container_name: zaseon-engine
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - ./engine/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./engine:/app
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  # ── Celery Worker ──────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ./engine
+      dockerfile: Dockerfile
+    container_name: zaseon-worker
+    command: celery -A engine.pipeline:celery_app worker --loglevel=info --concurrency=4 -Q scans,quickscan,verification,reports,soul_fuzzer
+    env_file:
+      - ./engine/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./engine:/app
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  # ── Celery Flower (Task Monitoring) ────────────────────────────────
+  flower:
+    build:
+      context: ./engine
+      dockerfile: Dockerfile
+    container_name: zaseon-flower
+    command: celery -A engine.pipeline:celery_app flower --port=5555 --broker_api=redis://redis:6379/1 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:?FLOWER_PASSWORD must be set}
+    ports:
+      - "127.0.0.1:5555:5555"
+    env_file:
+      - ./engine/.env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Celery Beat (Periodic Tasks) ──────────────────────────────────────
+  beat:
+    build:
+      context: ./engine
+      dockerfile: Dockerfile
+    container_name: zaseon-beat
+    command: celery -A engine.pipeline:celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    env_file:
+      - ./engine/.env
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Prometheus ─────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: zaseon-prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+    restart: unless-stopped
+
+  # ── Grafana ────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: zaseon-grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?GRAFANA_PASSWORD must be set}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # ── Mailhog (Dev SMTP) ────────────────────────────────────────────────
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: zaseon-mailhog
+    ports:
+      - "127.0.0.1:1025:1025" # SMTP
+      - "127.0.0.1:8025:8025" # Web UI
+    profiles:
+      - dev
+    restart: unless-stopped
+
+  # ── ZASEON Web (Next.js) ──────────────────────────────────────────────
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://engine:8000
+    container_name: zaseon-web
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://engine:8000
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?NEXTAUTH_SECRET must be set — generate with: openssl rand -base64 32}
+      NEXTAUTH_URL: http://localhost:3000
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+    depends_on:
+      - engine
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  promdata:
+  grafanadata:

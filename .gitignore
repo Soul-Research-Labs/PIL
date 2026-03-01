@@ -1,0 +1,64 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ── Node / Next.js ───────────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+.turbo/
+.vercel/
+*.tsbuildinfo
+
+# ── VS Code Extension ───────────────────────────────────────────────────────
+extensions/vscode/out/
+extensions/vscode/node_modules/
+*.vsix
+
+# ── Environment ──────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+engine/.env
+
+# ── Docker ───────────────────────────────────────────────────────────────────
+docker-compose.override.yml
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# ── IDE ──────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/settings.json
+.vscode/launch.json
+*.sublime-*
+
+# ── Terraform ────────────────────────────────────────────────────────────────
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.backup
+infra/terraform/.terraform.lock.hcl
+infra/terraform/terraform.tfvars
+
+# ── Misc ─────────────────────────────────────────────────────────────────────
+*.log
+/tmp/
+/temp/
+.cache/

@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZASEON Security Scanner</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 13px;
+        color: #e0e0e0;
+        background: #1e1e1e;
+        padding: 12px;
+      }
+      h2 {
+        font-size: 16px;
+        margin-bottom: 8px;
+        color: #fff;
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .header img {
+        width: 28px;
+        height: 28px;
+      }
+      button {
+        cursor: pointer;
+        border: none;
+        border-radius: 4px;
+        padding: 6px 12px;
+        font-size: 12px;
+      }
+      #scan-btn {
+        background: #3b82f6;
+        color: #fff;
+        width: 100%;
+        padding: 10px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      #scan-btn:hover {
+        background: #2563eb;
+      }
+      #scan-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      #status {
+        text-align: center;
+        margin-top: 6px;
+        font-size: 12px;
+      }
+      .text-blue {
+        color: #60a5fa;
+      }
+      .text-green {
+        color: #34d399;
+      }
+      .text-red {
+        color: #f87171;
+      }
+
+      /* Tabs */
+      .tabs {
+        display: flex;
+        gap: 1px;
+        background: #333;
+        border-radius: 4px;
+        margin: 12px 0;
+        overflow: hidden;
+      }
+      .tab-btn {
+        flex: 1;
+        background: #2a2a2a;
+        color: #999;
+        border: none;
+        padding: 8px;
+        font-size: 12px;
+      }
+      .tab-btn.active {
+        background: #3b82f6;
+        color: #fff;
+      }
+      .tab-panel {
+        display: block;
+      }
+      .tab-panel.hidden {
+        display: none;
+      }
+
+      /* Findings */
+      .score-bar {
+        background: #333;
+        border-radius: 4px;
+        padding: 8px 12px;
+        margin-bottom: 8px;
+        font-weight: 600;
+      }
+      .sev-group {
+        margin-bottom: 8px;
+      }
+      .sev-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        background: #252525;
+        border-radius: 4px;
+      }
+      .sev-badge {
+        color: #fff;
+        font-size: 10px;
+        font-weight: 700;
+        padding: 2px 6px;
+        border-radius: 3px;
+      }
+      .sev-count {
+        font-size: 11px;
+        color: #999;
+      }
+      .finding {
+        margin: 2px 0;
+        border-left: 2px solid #444;
+      }
+      .finding summary {
+        cursor: pointer;
+        padding: 6px 8px;
+        font-size: 12px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .finding summary:hover {
+        background: #2a2a2a;
+      }
+      .finding-title {
+        flex: 1;
+      }
+      .finding-loc {
+        color: #888;
+        font-size: 11px;
+        font-family: monospace;
+      }
+      .finding-body {
+        padding: 8px 12px;
+        background: #1a1a1a;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .finding-body p {
+        margin-bottom: 6px;
+      }
+      .remediation {
+        background: #1a2e1a;
+        border-left: 3px solid #34d399;
+        padding: 6px 8px;
+        margin: 6px 0;
+        border-radius: 2px;
+      }
+      .cwe {
+        display: inline-block;
+        background: #333;
+        padding: 1px 6px;
+        border-radius: 3px;
+        font-size: 10px;
+        margin-right: 4px;
+      }
+      .goto-btn {
+        background: #333;
+        color: #e0e0e0;
+        font-size: 11px;
+        margin-top: 4px;
+      }
+      .goto-btn:hover {
+        background: #3b82f6;
+      }
+      .empty {
+        text-align: center;
+        padding: 32px;
+        color: #999;
+      }
+      .score {
+        font-size: 18px;
+        font-weight: 700;
+        margin-top: 8px;
+        color: #34d399;
+      }
+
+      /* Settings */
+      .settings-group {
+        margin-bottom: 12px;
+      }
+      .settings-group label {
+        display: block;
+        font-size: 11px;
+        color: #999;
+        margin-bottom: 4px;
+      }
+      .settings-group input {
+        width: 100%;
+        background: #333;
+        color: #e0e0e0;
+        border: 1px solid #555;
+        border-radius: 4px;
+        padding: 6px 8px;
+        font-size: 12px;
+      }
+      #save-settings {
+        background: #333;
+        color: #e0e0e0;
+      }
+      #save-settings:hover {
+        background: #3b82f6;
+        color: #fff;
+      }
+      #settings-status {
+        font-size: 11px;
+        color: #34d399;
+        margin-left: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div
+        style="
+          width: 28px;
+          height: 28px;
+          background: #3b82f6;
+          border-radius: 6px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: bold;
+          color: #fff;
+          font-size: 16px;
+        "
+      >
+        Z
+      </div>
+      <div>
+        <h2>ZASEON</h2>
+        <div style="font-size: 10px; color: #888">
+          Smart Contract Security Scanner
+        </div>
+      </div>
+    </div>
+
+    <button id="scan-btn">🛡️ Scan Current File</button>
+    <div id="status"></div>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="results-tab">Results</button>
+      <button class="tab-btn" data-tab="settings-tab">Settings</button>
+    </div>
+
+    <div id="results-tab" class="tab-panel">
+      <div id="findings">
+        <div class="empty">
+          <p>
+            Click <strong>Scan Current File</strong> to analyze<br />your
+            Solidity contract for vulnerabilities.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div id="settings-tab" class="tab-panel hidden">
+      <div class="settings-group">
+        <label>API Endpoint</label>
+        <input
+          id="api-endpoint"
+          type="text"
+          placeholder="https://api.zaseon.io"
+        />
+      </div>
+      <div class="settings-group">
+        <label>API Key (optional)</label>
+        <input
+          id="api-key"
+          type="password"
+          placeholder="Enter your ZASEON API key"
+        />
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px">
+        <button id="save-settings">Save Settings</button>
+        <span id="settings-status"></span>
+      </div>
+    </div>
+
+    <script type="module" src="/src/index.ts"></script>
+  </body>
+</html>

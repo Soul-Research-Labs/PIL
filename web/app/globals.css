@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 7%;
+    --card-foreground: 210 40% 98%;
+    --primary: 239 84% 67%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 239 84% 67%;
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings:
+      "rlig" 1,
+      "calt" 1;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: hsl(var(--background));
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted));
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* Code highlighting override */
+.code-highlight pre {
+  background: hsl(222.2, 84%, 3%) !important;
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+/* Severity colors */
+.severity-critical {
+  color: #dc2626;
+}
+.severity-high {
+  color: #ea580c;
+}
+.severity-medium {
+  color: #ca8a04;
+}
+.severity-low {
+  color: #2563eb;
+}
+.severity-info {
+  color: #6b7280;
+}
+.severity-gas {
+  color: #8b5cf6;
+}
+
+/* Score animation */
+@keyframes score-fill {
+  from {
+    stroke-dashoffset: 283;
+  }
+}
+.score-ring {
+  animation: score-fill 1.5s ease-out;
+}

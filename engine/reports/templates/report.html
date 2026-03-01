@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZASEON Security Audit — {{ project_name }}</title>
+    <style>
+      :root {
+          --primary: #6366f1;
+          --primary-dark: #4f46e5;
+          --bg: #0f172a;
+          --surface: #1e293b;
+          --surface-light: #334155;
+          --text: #f1f5f9;
+          --text-muted: #94a3b8;
+          --border: #475569;
+          --critical: #dc2626;
+          --high: #ea580c;
+          --medium: #ca8a04;
+          --low: #2563eb;
+          --info: #6b7280;
+          --success: #16a34a;
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+          font-family: 'Inter', -apple-system, sans-serif;
+          background: var(--bg);
+          color: var(--text);
+          line-height: 1.6;
+      }
+      .container { max-width: 1100px; margin: 0 auto; padding: 2rem; }
+
+      /* Header */
+      .header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 2rem;
+          background: var(--surface);
+          border-radius: 12px;
+          margin-bottom: 2rem;
+          border: 1px solid var(--border);
+      }
+      .header h1 { font-size: 1.5rem; font-weight: 700; }
+      .header .meta { color: var(--text-muted); font-size: 0.875rem; }
+      .logo { font-size: 1.8rem; font-weight: 800; color: var(--primary); }
+
+      /* Score Card */
+      .score-section {
+          display: grid;
+          grid-template-columns: 200px 1fr;
+          gap: 2rem;
+          margin-bottom: 2rem;
+      }
+      .score-card {
+          background: var(--surface);
+          border-radius: 12px;
+          padding: 2rem;
+          text-align: center;
+          border: 1px solid var(--border);
+      }
+      .score-circle {
+          width: 120px;
+          height: 120px;
+          border-radius: 50%;
+          border: 6px solid {{ score_color }};
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin: 0 auto 1rem;
+          flex-direction: column;
+      }
+      .score-number { font-size: 2.5rem; font-weight: 800; color: {{ score_color }}; }
+      .score-grade { font-size: 0.875rem; color: var(--text-muted); }
+
+      /* Summary Stats */
+      .stats-grid {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 1rem;
+      }
+      .stat-card {
+          background: var(--surface);
+          border-radius: 8px;
+          padding: 1.25rem;
+          border: 1px solid var(--border);
+      }
+      .stat-value { font-size: 1.75rem; font-weight: 700; }
+      .stat-label { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; }
+
+      /* Severity Breakdown */
+      .severity-bar {
+          display: flex;
+          height: 8px;
+          border-radius: 4px;
+          overflow: hidden;
+          background: var(--surface-light);
+          margin: 1rem 0;
+      }
+      .severity-segment { height: 100%; }
+
+      /* Findings */
+      .section { margin-bottom: 2rem; }
+      .section-title {
+          font-size: 1.25rem;
+          font-weight: 700;
+          margin-bottom: 1rem;
+          padding-bottom: 0.5rem;
+          border-bottom: 2px solid var(--primary);
+      }
+      .finding {
+          background: var(--surface);
+          border-radius: 8px;
+          padding: 1.5rem;
+          margin-bottom: 1rem;
+          border-left: 4px solid;
+          border-right: 1px solid var(--border);
+          border-top: 1px solid var(--border);
+          border-bottom: 1px solid var(--border);
+      }
+      .finding.critical { border-left-color: var(--critical); }
+      .finding.high { border-left-color: var(--high); }
+      .finding.medium { border-left-color: var(--medium); }
+      .finding.low { border-left-color: var(--low); }
+      .finding.info, .finding.informational { border-left-color: var(--info); }
+
+      .finding-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 0.75rem;
+      }
+      .finding-title { font-weight: 600; font-size: 1rem; }
+      .badge {
+          display: inline-block;
+          padding: 0.15rem 0.6rem;
+          border-radius: 99px;
+          font-size: 0.7rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          color: white;
+      }
+      .badge-critical { background: var(--critical); }
+      .badge-high { background: var(--high); }
+      .badge-medium { background: var(--medium); }
+      .badge-low { background: var(--low); }
+      .badge-info, .badge-informational { background: var(--info); }
+      .badge-verified { background: var(--success); margin-left: 0.5rem; }
+
+      .finding-desc { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 0.75rem; }
+      .finding-meta { display: flex; gap: 1rem; font-size: 0.8rem; color: var(--text-muted); }
+      .finding-meta span { display: flex; align-items: center; gap: 0.25rem; }
+
+      .code-block {
+          background: #0d1117;
+          border-radius: 6px;
+          padding: 1rem;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 0.8rem;
+          overflow-x: auto;
+          margin: 0.75rem 0;
+          border: 1px solid var(--border);
+      }
+      .remediation {
+          background: rgba(22, 163, 74, 0.1);
+          border: 1px solid rgba(22, 163, 74, 0.3);
+          border-radius: 6px;
+          padding: 1rem;
+          margin-top: 0.75rem;
+      }
+      .remediation-title { color: var(--success); font-weight: 600; font-size: 0.85rem; margin-bottom: 0.5rem; }
+
+      /* Gas Optimization */
+      .gas-item {
+          background: var(--surface);
+          border-radius: 8px;
+          padding: 1rem;
+          margin-bottom: 0.75rem;
+          border: 1px solid var(--border);
+      }
+
+      /* Footer */
+      .footer {
+          text-align: center;
+          padding: 2rem;
+          color: var(--text-muted);
+          font-size: 0.8rem;
+          border-top: 1px solid var(--border);
+          margin-top: 2rem;
+      }
+
+      @media print {
+          body { background: white; color: #1a1a1a; }
+          .container { max-width: 100%; }
+          .header, .score-card, .stat-card, .finding, .gas-item {
+              background: #f8fafc;
+              border-color: #e2e8f0;
+          }
+          .finding-desc, .stat-label, .footer, .header .meta, .finding-meta { color: #64748b; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <!-- Header -->
+      <div class="header">
+        <div>
+          <div class="logo">
+            {% if branding.logo %}{{ branding.company_name }}{% else %}ZASEON{%
+            endif %}
+          </div>
+          <h1>Security Audit Report</h1>
+        </div>
+        <div style="text-align: right">
+          <div class="meta">Project: <strong>{{ project_name }}</strong></div>
+          <div class="meta">Date: {{ scan_date }}</div>
+          <div class="meta">Auditor: {{ auditor_name }}</div>
+          <div class="meta">Scan ID: {{ scan_id[:12] }}...</div>
+        </div>
+      </div>
+
+      <!-- Score -->
+      <div class="score-section">
+        <div class="score-card">
+          <div class="score-circle">
+            <div class="score-number">{{ security_score }}</div>
+          </div>
+          <div class="score-grade">Grade: {{ score_grade }}</div>
+        </div>
+        <div>
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-value">{{ total_findings }}</div>
+              <div class="stat-label">Total Findings</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value" style="color: var(--critical)">
+                {{ findings_by_severity.CRITICAL|length }}
+              </div>
+              <div class="stat-label">Critical</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value" style="color: var(--high)">
+                {{ findings_by_severity.HIGH|length }}
+              </div>
+              <div class="stat-label">High</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">{{ confirmed_findings }}</div>
+              <div class="stat-label">Verified</div>
+            </div>
+          </div>
+          <div class="severity-bar">
+            {% set total = total_findings or 1 %}
+            <div
+              class="severity-segment"
+              style="width: {{ (findings_by_severity.CRITICAL|length / total * 100)|round }}%; background: var(--critical);"
+            ></div>
+            <div
+              class="severity-segment"
+              style="width: {{ (findings_by_severity.HIGH|length / total * 100)|round }}%; background: var(--high);"
+            ></div>
+            <div
+              class="severity-segment"
+              style="width: {{ (findings_by_severity.MEDIUM|length / total * 100)|round }}%; background: var(--medium);"
+            ></div>
+            <div
+              class="severity-segment"
+              style="width: {{ (findings_by_severity.LOW|length / total * 100)|round }}%; background: var(--low);"
+            ></div>
+            <div
+              class="severity-segment"
+              style="width: {{ (findings_by_severity.INFORMATIONAL|default(findings_by_severity.INFO, true)|length / total * 100)|round }}%; background: var(--info);"
+            ></div>
+          </div>
+          <div
+            style="
+              display: flex;
+              gap: 1.5rem;
+              font-size: 0.8rem;
+              color: var(--text-muted);
+              margin-top: 0.5rem;
+            "
+          >
+            <span
+              >Lines Scanned:
+              <strong>{{ total_lines|default(0) }}</strong></span
+            >
+            <span>Duration: <strong>{{ scan_duration }}</strong></span>
+            <span>Type: <strong>{{ scan_type }}</strong></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Findings by Severity -->
+      {% for sev_name in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"]
+      %} {% if findings_by_severity[sev_name] %}
+      <div class="section">
+        <div class="section-title">
+          {{ sev_name }} Severity ({{ findings_by_severity[sev_name]|length }})
+        </div>
+        {% for f in findings_by_severity[sev_name] %}
+        <div class="finding {{ sev_name|lower }}">
+          <div class="finding-header">
+            <span class="finding-title">{{ f.title }}</span>
+            <div>
+              <span class="badge badge-{{ sev_name|lower }}"
+                >{{ sev_name }}</span
+              >
+              {% if f.verified %}<span class="badge badge-verified"
+                >✓ Verified</span
+              >{% endif %}
+            </div>
+          </div>
+          <div class="finding-desc">{{ f.description[:500] }}</div>
+          {% if f.snippet %}
+          <div class="code-block">{{ f.snippet }}</div>
+          {% endif %}
+          <div class="finding-meta">
+            <span>📁 {{ f.location.file }}:{{ f.location.start_line }}</span>
+            {% if f.cwe_id %}<span>🔗 {{ f.cwe_id }}</span>{% endif %} {% if
+            f.scwe_id %}<span>⛓ {{ f.scwe_id }}</span>{% endif %}
+            <span>🎯 {{ (f.confidence * 100)|round }}% confidence</span>
+          </div>
+          {% if f.remediation %}
+          <div class="remediation">
+            <div class="remediation-title">💡 Remediation</div>
+            <div style="font-size: 0.85rem">{{ f.remediation }}</div>
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %} {% endfor %}
+
+      <!-- Analysis Pipeline Metadata -->
+      {% if metadata %}
+      <div class="section">
+        <div class="section-title">🔬 Analysis Pipeline</div>
+        <div
+          style="
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+          "
+        >
+          {% if metadata.static_findings_count is defined %}
+          <div class="stat-card">
+            <div class="stat-value">{{ metadata.static_findings_count }}</div>
+            <div class="stat-label">Static Detector Findings</div>
+          </div>
+          {% endif %} {% if metadata.ast_findings_count is defined %}
+          <div class="stat-card">
+            <div class="stat-value">{{ metadata.ast_findings_count }}</div>
+            <div class="stat-label">AST/CFG Analysis Findings</div>
+          </div>
+          {% endif %} {% if metadata.slither_findings_count is defined %}
+          <div class="stat-card">
+            <div class="stat-value">{{ metadata.slither_findings_count }}</div>
+            <div class="stat-label">Slither Findings</div>
+          </div>
+          {% endif %} {% if metadata.llm_findings_count is defined %}
+          <div class="stat-card">
+            <div class="stat-value">{{ metadata.llm_findings_count }}</div>
+            <div class="stat-label">AI Deep Analysis Findings</div>
+          </div>
+          {% endif %} {% if metadata.total_findings_after_dedup is defined %}
+          <div class="stat-card">
+            <div class="stat-value">
+              {{ metadata.total_findings_after_dedup }}
+            </div>
+            <div class="stat-label">After Deduplication</div>
+          </div>
+          {% endif %} {% if metadata.taint_flows_detected is defined %}
+          <div class="stat-card">
+            <div class="stat-value">{{ metadata.taint_flows_detected }}</div>
+            <div class="stat-label">Taint Flows Detected</div>
+          </div>
+          {% endif %}
+        </div>
+        {% if metadata.llm_overall_risk %}
+        <div
+          style="
+            margin-top: 1rem;
+            background: var(--surface);
+            border-radius: 8px;
+            padding: 1.25rem;
+            border: 1px solid var(--border);
+          "
+        >
+          <div
+            style="
+              font-weight: 600;
+              margin-bottom: 0.5rem;
+              color: var(--primary);
+            "
+          >
+            🧠 AI Risk Assessment
+          </div>
+          <div style="color: var(--text-muted); font-size: 0.9rem">
+            {{ metadata.llm_overall_risk }}
+          </div>
+        </div>
+        {% endif %} {% if metadata.call_graph_stats %}
+        <div
+          style="
+            margin-top: 1rem;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 0.75rem;
+          "
+        >
+          <div class="stat-card" style="padding: 0.75rem">
+            <div class="stat-value" style="font-size: 1.25rem">
+              {{ metadata.call_graph_stats.entry_points }}
+            </div>
+            <div class="stat-label" style="font-size: 0.7rem">Entry Points</div>
+          </div>
+          <div class="stat-card" style="padding: 0.75rem">
+            <div class="stat-value" style="font-size: 1.25rem">
+              {{ metadata.call_graph_stats.external_calls }}
+            </div>
+            <div class="stat-label" style="font-size: 0.7rem">
+              External Calls
+            </div>
+          </div>
+          <div class="stat-card" style="padding: 0.75rem">
+            <div class="stat-value" style="font-size: 1.25rem">
+              {{ metadata.call_graph_stats.delegatecalls }}
+            </div>
+            <div class="stat-label" style="font-size: 0.7rem">
+              Delegatecalls
+            </div>
+          </div>
+          <div class="stat-card" style="padding: 0.75rem">
+            <div class="stat-value" style="font-size: 1.25rem">
+              {{ metadata.call_graph_stats.avg_complexity }}
+            </div>
+            <div class="stat-label" style="font-size: 0.7rem">
+              Avg Complexity
+            </div>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      <!-- Gas Optimizations -->
+      {% if gas_optimizations %}
+      <div class="section">
+        <div class="section-title">
+          ⛽ Gas Optimizations ({{ gas_optimizations|length }})
+        </div>
+        {% for g in gas_optimizations %}
+        <div class="gas-item">
+          <div style="font-weight: 600; margin-bottom: 0.25rem">
+            {{ g.description }}
+          </div>
+          <div style="color: var(--text-muted); font-size: 0.85rem">
+            {{ g.suggestion }}
+          </div>
+          <div
+            style="font-size: 0.8rem; margin-top: 0.5rem; color: var(--success)"
+          >
+            {% if g.estimated_gas_saved %}Estimated savings: ~{{
+            g.estimated_gas_saved }} gas{% endif %}
+            <span style="color: var(--text-muted); margin-left: 1rem"
+              >📁 {{ g.location }}</span
+            >
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <!-- Footer -->
+      <div class="footer">
+        <p>Generated by <strong>ZASEON Security Scanner</strong> v0.1.0</p>
+        <p>Scan ID: {{ scan_id }} | {{ scan_date }}</p>
+        <p style="margin-top: 0.5rem; font-size: 0.75rem">
+          This report is auto-generated. Findings should be reviewed by a
+          security professional.
+        </p>
+      </div>
+    </div>
+  </body>
+</html>

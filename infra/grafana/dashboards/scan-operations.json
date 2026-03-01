@@ -1,0 +1,210 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Scan Throughput (scans/min)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 15 },
+          "unit": "ops"
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(zaseon_scans_total[5m]) * 60",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "title": "Active Scans",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 20 },
+              { "color": "red", "value": 50 }
+            ]
+          }
+        }
+      },
+      "targets": [{ "expr": "zaseon_scans_active", "legendFormat": "active" }]
+    },
+    {
+      "title": "Queue Depth (Celery)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 200 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "celery_queue_length{queue=\"default\"}",
+          "legendFormat": "pending"
+        }
+      ]
+    },
+    {
+      "title": "Workers Online",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "celery_workers_active", "legendFormat": "workers" }
+      ]
+    },
+    {
+      "title": "Scan Duration (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2 } }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(zaseon_scan_duration_seconds_bucket[5m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(zaseon_scan_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(zaseon_scan_duration_seconds_bucket[5m]))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "title": "Findings by Severity",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum by (severity) (zaseon_findings_total)",
+          "legendFormat": "{{severity}}"
+        }
+      ],
+      "options": { "legend": { "placement": "right" } }
+    },
+    {
+      "title": "Findings by Category",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (category) (zaseon_findings_total))",
+          "legendFormat": "{{category}}"
+        }
+      ]
+    },
+    {
+      "title": "Coverage Trend (line %)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        }
+      },
+      "targets": [
+        {
+          "expr": "avg(zaseon_scan_coverage_percent)",
+          "legendFormat": "avg coverage"
+        },
+        { "expr": "min(zaseon_scan_coverage_percent)", "legendFormat": "min" },
+        { "expr": "max(zaseon_scan_coverage_percent)", "legendFormat": "max" }
+      ]
+    },
+    {
+      "title": "Security Score Distribution",
+      "type": "histogram",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "zaseon_scan_security_score_bucket",
+          "legendFormat": "{{le}}"
+        }
+      ]
+    },
+    {
+      "title": "Error Rate (5xx)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": { "lineWidth": 2, "fillOpacity": 20 },
+          "color": { "fixedColor": "red", "mode": "fixed" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(zaseon_http_requests_total{status=~\"5..\"}[5m]) / rate(zaseon_http_requests_total[5m])",
+          "legendFormat": "5xx rate"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["zaseon", "scans", "security"],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" }
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "ZASEON — Scan Operations",
+  "uid": "zaseon-scan-ops"
+}

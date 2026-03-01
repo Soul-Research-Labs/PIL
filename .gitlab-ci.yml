@@ -1,0 +1,121 @@
+# ZASEON Security Scanner — GitLab CI Template
+# Usage: Include this template in your project's .gitlab-ci.yml
+#
+#   include:
+#     - remote: 'https://raw.githubusercontent.com/OWNER/zaseon/main/.gitlab-ci.yml'
+#
+#   variables:
+#     ZASEON_API_URL: "https://api.zaseon.dev"
+#     ZASEON_API_KEY: $ZASEON_API_KEY        # Set in CI/CD → Variables
+#     ZASEON_SEVERITY_THRESHOLD: "high"      # Fail on high+critical (default)
+#
+# Or copy this file into your repo and customize as needed.
+
+stages:
+  - security
+
+variables:
+  ZASEON_API_URL: "${ZASEON_API_URL:-https://api.zaseon.dev}"
+  ZASEON_SEVERITY_THRESHOLD: "${ZASEON_SEVERITY_THRESHOLD:-high}"
+  ZASEON_FORMAT: "sarif"
+  ZASEON_SCAN_MODE: "standard"
+  PYTHON_VERSION: "3.12"
+
+.zaseon-scan-template:
+  stage: security
+  image: python:${PYTHON_VERSION}-slim
+  before_script:
+    - pip install --no-cache-dir zaseon-sdk || pip install --no-cache-dir -e "./engine[dev]"
+  script:
+    - |
+      echo "╔══════════════════════════════════════════╗"
+      echo "║       ZASEON Security Scanner            ║"
+      echo "╚══════════════════════════════════════════╝"
+
+      # Find Solidity files
+      SOL_FILES=$(find . -name '*.sol' -not -path '*/node_modules/*' -not -path '*/lib/*' -not -path '*/test/*' | head -500)
+      if [ -z "$SOL_FILES" ]; then
+        echo "⚠ No Solidity files found in repository"
+        exit 0
+      fi
+      echo "Found $(echo "$SOL_FILES" | wc -l) Solidity files"
+
+      # Run scan via CLI
+      zaseon scan . \
+        --format ${ZASEON_FORMAT} \
+        --severity ${ZASEON_SEVERITY_THRESHOLD} \
+        --output zaseon-results.sarif \
+        --no-banner \
+        ${ZASEON_NO_LLM:+--no-llm} \
+        ${ZASEON_NO_VERIFY:+--no-verify} || SCAN_EXIT=$?
+
+      # Parse results
+      if [ -f zaseon-results.sarif ]; then
+        TOTAL=$(python3 -c "
+      import json, sys
+      with open('zaseon-results.sarif') as f:
+          sarif = json.load(f)
+      results = sarif.get('runs', [{}])[0].get('results', [])
+      print(len(results))
+      " 2>/dev/null || echo "0")
+
+        CRITICAL=$(python3 -c "
+      import json
+      with open('zaseon-results.sarif') as f:
+          sarif = json.load(f)
+      results = sarif.get('runs', [{}])[0].get('results', [])
+      print(sum(1 for r in results if r.get('level') == 'error' and 'critical' in r.get('message', {}).get('text', '').lower()))
+      " 2>/dev/null || echo "0")
+
+        HIGH=$(python3 -c "
+      import json
+      with open('zaseon-results.sarif') as f:
+          sarif = json.load(f)
+      results = sarif.get('runs', [{}])[0].get('results', [])
+      print(sum(1 for r in results if r.get('level') == 'error'))
+      " 2>/dev/null || echo "0")
+
+        echo ""
+        echo "┌───────────────────────────────────┐"
+        echo "│  ZASEON Scan Results               │"
+        echo "├───────────────────────────────────┤"
+        echo "│  Total findings:  ${TOTAL}         "
+        echo "│  Critical:        ${CRITICAL}      "
+        echo "│  High:            ${HIGH}          "
+        echo "└───────────────────────────────────┘"
+      fi
+
+      # Fail pipeline based on threshold
+      if [ "${SCAN_EXIT:-0}" -ne 0 ]; then
+        echo "✗ Findings exceed severity threshold (${ZASEON_SEVERITY_THRESHOLD})"
+        exit 1
+      fi
+
+      echo "✓ Scan passed — no findings above ${ZASEON_SEVERITY_THRESHOLD} severity"
+  artifacts:
+    when: always
+    paths:
+      - zaseon-results.sarif
+      - zaseon-results.json
+    reports:
+      sast: zaseon-results.sarif
+    expire_in: 30 days
+  allow_failure: false
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Default job — include this file and this job runs automatically
+zaseon-security-scan:
+  extends: .zaseon-scan-template
+
+# Optional: Deep scan for default branch only
+zaseon-deep-scan:
+  extends: .zaseon-scan-template
+  variables:
+    ZASEON_SCAN_MODE: "deep"
+    ZASEON_SEVERITY_THRESHOLD: "medium"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  allow_failure: true

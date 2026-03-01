@@ -1,0 +1,208 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Request Rate (req/s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "stacking": { "mode": "normal" }
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (method) (rate(zaseon_http_requests_total[5m]))",
+          "legendFormat": "{{method}}"
+        }
+      ]
+    },
+    {
+      "title": "Request Latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "custom": { "lineWidth": 2 } }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(zaseon_http_request_duration_seconds_bucket[5m])) * 1000",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(zaseon_http_request_duration_seconds_bucket[5m])) * 1000",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(zaseon_http_request_duration_seconds_bucket[5m])) * 1000",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "title": "Latency by Endpoint (p95)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "topk(15, histogram_quantile(0.95, sum by (le, handler) (rate(zaseon_http_request_duration_seconds_bucket[5m]))) * 1000)",
+          "legendFormat": "{{handler}}",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Value" },
+            "properties": [
+              { "id": "unit", "value": "ms" },
+              { "id": "custom.displayMode", "value": "color-background" },
+              {
+                "id": "thresholds",
+                "value": {
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "yellow", "value": 200 },
+                    { "color": "red", "value": 1000 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "title": "HTTP Status Codes",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2, "stacking": { "mode": "normal" } }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(zaseon_http_requests_total[5m]) * 60)",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "title": "Error Rate (4xx + 5xx)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": { "lineWidth": 2, "fillOpacity": 20 }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(zaseon_http_requests_total{status=~\"4..\"}[5m])) / sum(rate(zaseon_http_requests_total[5m]))",
+          "legendFormat": "4xx rate"
+        },
+        {
+          "expr": "sum(rate(zaseon_http_requests_total{status=~\"5..\"}[5m])) / sum(rate(zaseon_http_requests_total[5m]))",
+          "legendFormat": "5xx rate"
+        }
+      ]
+    },
+    {
+      "title": "Request Size (bytes)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "custom": { "lineWidth": 2 } }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(zaseon_http_request_size_bytes_bucket[5m]))",
+          "legendFormat": "p95 req size"
+        }
+      ]
+    },
+    {
+      "title": "Response Size (bytes)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "custom": { "lineWidth": 2 } }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(zaseon_http_response_size_bytes_bucket[5m]))",
+          "legendFormat": "p95 resp size"
+        }
+      ]
+    },
+    {
+      "title": "Active Connections",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "zaseon_http_active_connections",
+          "legendFormat": "connections"
+        }
+      ]
+    },
+    {
+      "title": "Rate Limited Requests",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2 },
+          "color": { "fixedColor": "orange", "mode": "fixed" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(zaseon_http_rate_limited_total[5m]) * 60",
+          "legendFormat": "rate limited/min"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["zaseon", "api", "latency"],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" }
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "ZASEON — API Performance",
+  "uid": "zaseon-api-perf"
+}

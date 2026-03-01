@@ -1,0 +1,177 @@
+# ZASEON Monitoring Stack — Prometheus ServiceMonitor + Grafana ConfigMap
+#
+# Grafana dashboard is provisioned via ConfigMap sidecar.
+# Prometheus scrapes /api/metrics from engine pods.
+
+---
+# ── Prometheus ServiceMonitor ────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: zaseon-engine
+  namespace: zaseon
+  labels:
+    app.kubernetes.io/name: zaseon
+    release: prometheus # must match Prometheus Operator serviceMonitorSelector
+spec:
+  selector:
+    matchLabels:
+      app: zaseon-engine
+  endpoints:
+    - port: http
+      path: /api/metrics
+      interval: 15s
+      scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+      - zaseon
+
+---
+# ── Grafana Dashboard ConfigMap ──────────────────────────────────────────────
+# Auto-provisioned by Grafana sidecar when label grafana_dashboard=1 is set
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zaseon-grafana-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  zaseon-overview.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "liveNow": false,
+      "panels": [
+        {
+          "title": "HTTP Request Rate",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "expr": "rate(zaseon_http_requests_total[5m])",
+              "legendFormat": "{{method}} {{path}} {{status}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": { "lineWidth": 2 }
+            }
+          }
+        },
+        {
+          "title": "Request Latency (p95)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, rate(zaseon_http_request_duration_seconds_bucket[5m]))",
+              "legendFormat": "p95 {{method}} {{path}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": { "lineWidth": 2 }
+            }
+          }
+        },
+        {
+          "title": "Active Requests",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+          "targets": [
+            { "expr": "zaseon_active_requests", "legendFormat": "Active" }
+          ],
+          "fieldConfig": {
+            "defaults": { "thresholds": { "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 100 }
+            ]}}
+          }
+        },
+        {
+          "title": "Scans Initiated",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+          "targets": [
+            { "expr": "sum(zaseon_scans_total)", "legendFormat": "Total Scans" }
+          ]
+        },
+        {
+          "title": "Soul Campaigns",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+          "targets": [
+            { "expr": "sum(zaseon_soul_campaigns_total)", "legendFormat": "Total Campaigns" }
+          ]
+        },
+        {
+          "title": "Findings by Severity",
+          "type": "piechart",
+          "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+          "targets": [
+            { "expr": "sum by (severity) (zaseon_findings_total)", "legendFormat": "{{severity}}" }
+          ]
+        },
+        {
+          "title": "Scan Throughput",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+          "targets": [
+            {
+              "expr": "rate(zaseon_scans_total[5m])",
+              "legendFormat": "{{scan_type}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "ops", "custom": { "lineWidth": 2 } }
+          }
+        },
+        {
+          "title": "Campaign Modes",
+          "type": "bargauge",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+          "targets": [
+            {
+              "expr": "sum by (mode) (zaseon_soul_campaigns_total)",
+              "legendFormat": "{{mode}}"
+            }
+          ]
+        },
+        {
+          "title": "Error Rate (5xx)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+          "targets": [
+            {
+              "expr": "rate(zaseon_http_requests_total{status=~\"5..\"}[5m])",
+              "legendFormat": "{{status}} {{path}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": { "lineWidth": 2, "fillOpacity": 20 },
+              "color": { "mode": "fixed", "fixedColor": "red" }
+            }
+          }
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 39,
+      "tags": ["zaseon", "security", "fuzzer"],
+      "templating": { "list": [] },
+      "time": { "from": "now-3h", "to": "now" },
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "ZASEON Overview",
+      "uid": "zaseon-overview",
+      "version": 1
+    }
