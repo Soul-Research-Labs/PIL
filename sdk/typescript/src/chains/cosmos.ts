@@ -1,9 +1,51 @@
 /**
  * Cosmos (CosmWasm) transaction builder for PIL privacy pool operations.
- * Uses @cosmjs/cosmwasm-stargate for message construction.
+ * Uses @cosmjs/cosmwasm-stargate for message construction and query helpers.
  */
 
 import type { Coin } from "@cosmjs/stargate";
+
+export interface CosmosPoolConfig {
+  /** Bech32 contract address of the deployed PIL CosmWasm contract. */
+  contractAddress: string;
+  /** Native denom used by the pool (e.g., "uatom", "uosmo"). */
+  denom: string;
+  /** RPC endpoint URL. */
+  rpcUrl: string;
+  /** Chain ID (e.g., "cosmoshub-4", "osmosis-1"). */
+  chainId: string;
+  /** Gas price in the pool denom (e.g. "0.025uatom"). */
+  gasPrice?: string;
+}
+
+/** An unsigned CosmWasm execute message ready to sign. */
+export interface CosmosTxPayload {
+  contractAddress: string;
+  msg: Record<string, unknown>;
+  funds: Coin[];
+}
+
+/** Gas estimation result. */
+export interface GasEstimate {
+  /** Estimated gas units. */
+  gasWanted: number;
+  /** Fee amount in the pool denom. */
+  fee: Coin;
+}
+
+/** Pool on-chain status. */
+export interface PoolStatus {
+  noteCount: number;
+  nullifierCount: number;
+  poolBalance: string;
+  currentEpoch: number;
+}
+
+/** Epoch root query result. */
+export interface EpochRootResult {
+  epoch: number;
+  root: string;
+}
 
 export interface CosmosPoolConfig {
   /** Bech32 contract address of the deployed PIL CosmWasm contract. */
@@ -130,5 +172,42 @@ export class CosmosTxBuilder {
    */
   queryEpochRoot(epoch: number): Record<string, unknown> {
     return { epoch_root: { epoch } };
+  }
+
+  /**
+   * Estimate gas for an execute message.
+   * Uses a fixed multiplier over a base cost per message type.
+   */
+  estimateGas(
+    msgType: "deposit" | "transfer" | "withdraw" | "finalize_epoch",
+    multiplier = 1.4,
+  ): GasEstimate {
+    const baseCosts: Record<string, number> = {
+      deposit: 200_000,
+      transfer: 450_000,
+      withdraw: 400_000,
+      finalize_epoch: 150_000,
+    };
+    const gasWanted = Math.ceil((baseCosts[msgType] ?? 300_000) * multiplier);
+    const priceNum = parseFloat(this.config.gasPrice ?? "0.025");
+    const feeAmount = Math.ceil(gasWanted * priceNum).toString();
+    return {
+      gasWanted,
+      fee: { denom: this.config.denom, amount: feeAmount },
+    };
+  }
+
+  /**
+   * Build a signed execute message envelope with gas estimation.
+   * Wraps a CosmosTxPayload with the estimated fee for convenience.
+   */
+  withGas(
+    payload: CosmosTxPayload,
+    msgType: "deposit" | "transfer" | "withdraw" | "finalize_epoch",
+  ): CosmosTxPayload & { estimatedGas: GasEstimate } {
+    return {
+      ...payload,
+      estimatedGas: this.estimateGas(msgType),
+    };
   }
 }

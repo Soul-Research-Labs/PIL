@@ -3,6 +3,12 @@ import { PilWallet, type WalletNote } from "./wallet.js";
 import { NoteManager, type NoteData } from "./note.js";
 import { ChainDomain } from "./domain.js";
 import { bytesToHex, randomBytes } from "./utils.js";
+import {
+  CosmosTxBuilder,
+  type CosmosPoolConfig,
+  type PoolStatus,
+  type EpochRootResult,
+} from "./chains/cosmos.js";
 
 export interface PilClientConfig {
   /** Prover backend (WASM or mock). */
@@ -13,6 +19,8 @@ export interface PilClientConfig {
   defaultChain: ChainDomain;
   /** Default app ID. */
   defaultAppId: number;
+  /** Optional Cosmos pool config — enables getPoolStatus/getEpochRoot. */
+  cosmosConfig?: CosmosPoolConfig;
 }
 
 /**
@@ -25,6 +33,7 @@ export class PilClient {
   private readonly ownerPubKey: string;
   private readonly defaultChain: ChainDomain;
   private readonly defaultAppId: number;
+  private readonly cosmosTx?: CosmosTxBuilder;
 
   constructor(config: PilClientConfig) {
     this.wallet = new PilWallet();
@@ -32,6 +41,9 @@ export class PilClient {
     this.ownerPubKey = config.ownerPubKey;
     this.defaultChain = config.defaultChain;
     this.defaultAppId = config.defaultAppId;
+    if (config.cosmosConfig) {
+      this.cosmosTx = new CosmosTxBuilder(config.cosmosConfig);
+    }
   }
 
   /**
@@ -192,5 +204,29 @@ export class PilClient {
       changeCommitments: changeNotes.map((n) => n.commitment),
       changeNotes,
     };
+  }
+
+  /**
+   * Build a pool status query message.
+   * Returns the CosmWasm query message — caller sends it via their signing client.
+   * @throws if no cosmosConfig was provided.
+   */
+  getPoolStatusQuery(): Record<string, unknown> {
+    if (!this.cosmosTx) {
+      throw new Error("cosmosConfig is required for pool queries");
+    }
+    return this.cosmosTx.queryStatus();
+  }
+
+  /**
+   * Build an epoch root query message.
+   * Returns the CosmWasm query message — caller sends it via their signing client.
+   * @throws if no cosmosConfig was provided.
+   */
+  getEpochRootQuery(epoch: number): Record<string, unknown> {
+    if (!this.cosmosTx) {
+      throw new Error("cosmosConfig is required for pool queries");
+    }
+    return this.cosmosTx.queryEpochRoot(epoch);
   }
 }
