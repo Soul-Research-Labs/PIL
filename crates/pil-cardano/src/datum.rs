@@ -7,7 +7,6 @@
 //! - **Nullifier UTXOs**: Each spent nullifier is recorded as a UTXO datum
 //! - **Epoch UTXO**: Contains the current epoch state
 
-use pil_primitives::types::Base;
 use serde::{Deserialize, Serialize};
 
 /// Datum attached to the main privacy pool state UTXO.
@@ -186,7 +185,7 @@ mod tests {
         assert!(!cbor.is_empty());
         // First byte should be CBOR tag 121 (constructor 0): 0xd8 0x79
         assert_eq!(cbor[0], 0xd8); // tag initial byte
-        assert_eq!(cbor[1], 121);  // tag value for constructor 0
+        assert_eq!(cbor[1], 121); // tag value for constructor 0
     }
 
     #[test]

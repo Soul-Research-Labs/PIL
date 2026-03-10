@@ -3,8 +3,8 @@
 //! Redeemers are the "action" data provided when spending a validator UTXO.
 //! They tell the on-chain validator what operation is being performed.
 
-use serde::{Deserialize, Serialize};
 use super::datum::PlutusData;
+use serde::{Deserialize, Serialize};
 
 /// Top-level redeemer for the privacy pool validator.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -2,26 +2,24 @@
 //!
 //! Run with: `cargo bench --package pil-benchmarks`
 
-use criterion::{criterion_group, criterion_main, Criterion, BatchSize};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use ff::Field;
 use pasta_curves::pallas;
 use rand::rngs::OsRng;
 
-use pil_primitives::commitment::pedersen_commit;
-use pil_primitives::domain::{ChainDomain, DomainSeparator};
-use pil_primitives::hash::poseidon_hash;
 use pil_note::keys::SpendingKey;
 use pil_note::note::Note;
 use pil_note::{derive_nullifier_v1, derive_nullifier_v2};
 use pil_pool::{EpochManager, PrivacyPool};
+use pil_primitives::commitment::pedersen_commit;
+use pil_primitives::domain::{ChainDomain, DomainSeparator};
+use pil_primitives::hash::poseidon_hash;
 use pil_tree::IncrementalMerkleTree;
 
 fn bench_poseidon_hash(c: &mut Criterion) {
     let a = pallas::Base::random(OsRng);
 
-    c.bench_function("poseidon_hash", |bench| {
-        bench.iter(|| poseidon_hash(a))
-    });
+    c.bench_function("poseidon_hash", |bench| bench.iter(|| poseidon_hash(a)));
 }
 
 fn bench_pedersen_commit(c: &mut Criterion) {
@@ -37,9 +35,7 @@ fn bench_note_commitment(c: &mut Criterion) {
     let sk = SpendingKey::random(&mut OsRng);
     let note = Note::new(500, sk.owner(), 0);
 
-    c.bench_function("note_commitment", |bench| {
-        bench.iter(|| note.commitment())
-    });
+    c.bench_function("note_commitment", |bench| bench.iter(|| note.commitment()));
 }
 
 fn bench_nullifier_v1(c: &mut Criterion) {

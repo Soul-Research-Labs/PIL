@@ -1,4 +1,3 @@
-use ff::PrimeField;
 use pasta_curves::pallas;
 
 /// Base field element (Pallas base field).

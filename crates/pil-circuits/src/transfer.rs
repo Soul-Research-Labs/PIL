@@ -8,7 +8,6 @@
 //! 5. All values are non-negative (range check: 0..2^64)
 //! 6. Output note commitments are correctly derived
 
-use ff::PrimeField;
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
     plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance, Selector},
@@ -74,6 +73,7 @@ impl TransferCircuit {
 #[derive(Debug, Clone)]
 pub struct TransferConfig {
     advice: [Column<Advice>; 4],
+    #[allow(dead_code)]
     instance: Column<Instance>,
     selector: Selector,
 }

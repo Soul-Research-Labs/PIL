@@ -5,7 +5,7 @@ use ark_groth16::{Groth16, ProvingKey};
 use ark_snark::SNARK;
 use ark_std::rand::rngs::OsRng;
 
-use crate::circuit::{WrapperCircuit, compute_inputs_hash};
+use crate::circuit::{compute_inputs_hash, WrapperCircuit};
 
 /// Wrapper proving key (BLS12-381 Groth16).
 pub struct WrapperProvingKey {
@@ -18,16 +18,11 @@ pub struct WrapperProver;
 impl WrapperProver {
     /// Generate proving and verifying keys (requires a trusted setup).
     /// The circuit is small (~2K constraints).
-    pub fn setup() -> Result<
-        (WrapperProvingKey, crate::verifier::WrapperVerifyingKey),
-        WrapperProverError,
-    > {
+    pub fn setup(
+    ) -> Result<(WrapperProvingKey, crate::verifier::WrapperVerifyingKey), WrapperProverError> {
         let empty_circuit = WrapperCircuit::empty();
-        let (pk, vk) = Groth16::<Bls12_381>::circuit_specific_setup(
-            empty_circuit,
-            &mut OsRng,
-        )
-        .map_err(|e| WrapperProverError::Setup(e.to_string()))?;
+        let (pk, vk) = Groth16::<Bls12_381>::circuit_specific_setup(empty_circuit, &mut OsRng)
+            .map_err(|e| WrapperProverError::Setup(e.to_string()))?;
 
         Ok((
             WrapperProvingKey { pk },
@@ -45,11 +40,7 @@ impl WrapperProver {
         proof_type: u8,
     ) -> Result<WrapperProof, WrapperProverError> {
         let hash = compute_inputs_hash(&inner_public_inputs, proof_type);
-        let circuit = WrapperCircuit::new(
-            inner_public_inputs.clone(),
-            hash,
-            proof_type,
-        );
+        let circuit = WrapperCircuit::new(inner_public_inputs.clone(), hash, proof_type);
 
         let proof = Groth16::<Bls12_381>::prove(&pk.pk, circuit, &mut OsRng)
             .map_err(|e| WrapperProverError::ProofGeneration(e.to_string()))?;

@@ -6,7 +6,7 @@
 //! Uses `vesta::Affine` as commitment curve (matching the prover).
 
 use halo2_proofs::{
-    plonk::{self, verify_proof, SingleVerifier, VerifyingKey},
+    plonk::{verify_proof, SingleVerifier, VerifyingKey},
     poly::commitment::Params,
     transcript::{Blake2bRead, Challenge255},
 };
@@ -20,17 +20,10 @@ pub fn verify_transfer(
     public_inputs: &[&[pallas::Base]],
 ) -> Result<(), VerifierError> {
     let strategy = SingleVerifier::new(params);
-    let mut transcript =
-        Blake2bRead::<_, vesta::Affine, Challenge255<_>>::init(proof_bytes);
+    let mut transcript = Blake2bRead::<_, vesta::Affine, Challenge255<_>>::init(proof_bytes);
 
-    verify_proof(
-        params,
-        vk,
-        strategy,
-        &[public_inputs],
-        &mut transcript,
-    )
-    .map_err(|e| VerifierError::InvalidProof(format!("transfer: {e}")))?;
+    verify_proof(params, vk, strategy, &[public_inputs], &mut transcript)
+        .map_err(|e| VerifierError::InvalidProof(format!("transfer: {e}")))?;
 
     Ok(())
 }
@@ -43,17 +36,10 @@ pub fn verify_withdraw(
     public_inputs: &[&[pallas::Base]],
 ) -> Result<(), VerifierError> {
     let strategy = SingleVerifier::new(params);
-    let mut transcript =
-        Blake2bRead::<_, vesta::Affine, Challenge255<_>>::init(proof_bytes);
+    let mut transcript = Blake2bRead::<_, vesta::Affine, Challenge255<_>>::init(proof_bytes);
 
-    verify_proof(
-        params,
-        vk,
-        strategy,
-        &[public_inputs],
-        &mut transcript,
-    )
-    .map_err(|e| VerifierError::InvalidProof(format!("withdraw: {e}")))?;
+    verify_proof(params, vk, strategy, &[public_inputs], &mut transcript)
+        .map_err(|e| VerifierError::InvalidProof(format!("withdraw: {e}")))?;
 
     Ok(())
 }
@@ -70,14 +56,8 @@ pub fn batch_verify(
         let mut transcript =
             Blake2bRead::<_, vesta::Affine, Challenge255<_>>::init(proof_bytes.as_slice());
 
-        verify_proof(
-            params,
-            vk,
-            strategy,
-            &[&pi_refs],
-            &mut transcript,
-        )
-        .map_err(|e| VerifierError::InvalidProof(format!("batch[{i}]: {e}")))?;
+        verify_proof(params, vk, strategy, &[&pi_refs], &mut transcript)
+            .map_err(|e| VerifierError::InvalidProof(format!("batch[{i}]: {e}")))?;
     }
     Ok(())
 }

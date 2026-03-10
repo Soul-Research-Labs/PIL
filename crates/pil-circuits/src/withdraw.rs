@@ -7,7 +7,7 @@
 
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
-    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Expression, Instance, Selector},
+    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance, Selector},
     poly::Rotation,
 };
 use pasta_curves::pallas;
@@ -38,6 +38,7 @@ impl WithdrawCircuit {
 #[derive(Debug, Clone)]
 pub struct WithdrawConfig {
     advice: [Column<Advice>; 4],
+    #[allow(dead_code)]
     instance: Column<Instance>,
     selector: Selector,
 }
@@ -98,10 +99,8 @@ impl Circuit<pallas::Base> for WithdrawCircuit {
                 region.assign_advice(|| "in1", config.advice[1], 0, || self.input_values[1])?;
 
                 // Output values include the change notes; exit_value + fee are the difference
-                let out0_with_exit = self.output_values[0].and_then(|o| {
-                    self.exit_value
-                        .and_then(|e| self.fee.map(|f| o + e + f))
-                });
+                let out0_with_exit = self.output_values[0]
+                    .and_then(|o| self.exit_value.and_then(|e| self.fee.map(|f| o + e + f)));
                 region.assign_advice(|| "out0+exit+fee", config.advice[2], 0, || out0_with_exit)?;
                 region.assign_advice(|| "out1", config.advice[3], 0, || self.output_values[1])?;
 

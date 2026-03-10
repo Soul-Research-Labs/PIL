@@ -8,10 +8,10 @@
 //! 4. Tracks relayed epochs to prevent duplicates
 
 use super::{BridgeConfig, EpochAttestation};
+use pil_cosmos::ibc::{EpochSyncPacket, IBCEpochSync};
 use pil_primitives::domain::ChainDomain;
-use pil_cosmos::ibc::{IBCEpochSync, EpochSyncPacket};
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Response from the PIL RPC `/status` endpoint.
 #[derive(Debug, serde::Deserialize)]
@@ -41,6 +41,8 @@ pub struct BridgeRelayer {
     metrics: RelayerMetrics,
     /// HTTP client for RPC calls.
     http: reqwest::Client,
+    /// Per-pair rate limiter.
+    rate_limiter: RateLimiter,
 }
 
 /// A pending attestation waiting to be submitted.
@@ -50,6 +52,59 @@ struct PendingAttestation {
     destination: ChainDomain,
     retries: u32,
     max_retries: u32,
+    /// Next retry time (epoch seconds). Implements exponential backoff.
+    next_retry_at: u64,
+}
+
+/// Simple per-pair rate limiter: allows at most `max_per_window`
+/// submissions per `window_secs` seconds for each (source, dest) pair.
+#[derive(Debug, Clone)]
+pub struct RateLimiter {
+    /// Maximum submissions per window.
+    max_per_window: u32,
+    /// Window duration in seconds.
+    window_secs: u64,
+    /// Submission timestamps per pair key.
+    history: HashMap<(u32, u32), Vec<u64>>,
+}
+
+impl RateLimiter {
+    /// Create a rate limiter allowing `max_per_window` submissions
+    /// every `window_secs` seconds per chain pair.
+    pub fn new(max_per_window: u32, window_secs: u64) -> Self {
+        Self {
+            max_per_window,
+            window_secs,
+            history: HashMap::new(),
+        }
+    }
+
+    /// Check if a submission is allowed for this pair, and record it if so.
+    pub fn try_acquire(&mut self, pair: (u32, u32), now: u64) -> bool {
+        let entries = self.history.entry(pair).or_default();
+        // Evict entries outside the window
+        entries.retain(|&ts| now.saturating_sub(ts) < self.window_secs);
+        if entries.len() < self.max_per_window as usize {
+            entries.push(now);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Number of submissions remaining in the current window for a pair.
+    pub fn remaining(&mut self, pair: (u32, u32), now: u64) -> u32 {
+        let entries = self.history.entry(pair).or_default();
+        entries.retain(|&ts| now.saturating_sub(ts) < self.window_secs);
+        self.max_per_window.saturating_sub(entries.len() as u32)
+    }
+}
+
+impl Default for RateLimiter {
+    fn default() -> Self {
+        // Default: 10 relays per 60 seconds per pair
+        Self::new(10, 60)
+    }
 }
 
 /// Relayer operational metrics.
@@ -63,6 +118,8 @@ pub struct RelayerMetrics {
     pub verifications: u64,
     /// Total retry attempts.
     pub retries: u64,
+    /// Total submissions blocked by rate limiter.
+    pub rate_limited: u64,
 }
 
 impl BridgeRelayer {
@@ -74,6 +131,7 @@ impl BridgeRelayer {
             pending_queue: Vec::new(),
             metrics: RelayerMetrics::default(),
             http: reqwest::Client::new(),
+            rate_limiter: RateLimiter::default(),
         }
     }
 
@@ -118,15 +176,14 @@ impl BridgeRelayer {
                     Ok(Some(epoch)) => {
                         tracing::info!(
                             "Relayed epoch {} from {:?} → {:?}",
-                            epoch, source, destination,
+                            epoch,
+                            source,
+                            destination,
                         );
                     }
                     Ok(None) => {} // No new epoch
                     Err(e) => {
-                        tracing::warn!(
-                            "Relay error {:?} → {:?}: {}",
-                            source, destination, e,
-                        );
+                        tracing::warn!("Relay error {:?} → {:?}: {}", source, destination, e,);
                         self.metrics.relay_failures += 1;
                     }
                 }
@@ -160,9 +217,7 @@ impl BridgeRelayer {
 
         // Relay all missed epochs sequentially
         for epoch in (last_relayed + 1)..=latest_epoch {
-            let attestation = self
-                .fetch_epoch_attestation(source, epoch)
-                .await?;
+            let attestation = self.fetch_epoch_attestation(source, epoch).await?;
 
             // Verify the attestation's light-client proof
             self.verify_attestation(&attestation)?;
@@ -196,6 +251,19 @@ impl BridgeRelayer {
             }
         }
 
+        // Rate limit check
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if !self.rate_limiter.try_acquire(pair_key, now) {
+            self.metrics.rate_limited += 1;
+            return Err(BridgeError::RateLimited {
+                src: source,
+                dst: destination,
+            });
+        }
+
         // Verify the attestation
         self.verify_attestation(&attestation)?;
         self.metrics.verifications += 1;
@@ -209,10 +277,7 @@ impl BridgeRelayer {
     }
 
     /// Fetch the latest finalized epoch number from a chain.
-    async fn fetch_latest_epoch(
-        &self,
-        chain: ChainDomain,
-    ) -> Result<u64, BridgeError> {
+    async fn fetch_latest_epoch(&self, chain: ChainDomain) -> Result<u64, BridgeError> {
         let endpoint = self.endpoint_for(chain)?;
         tracing::debug!("Fetching latest epoch from {:?} at {}", chain, endpoint);
 
@@ -249,7 +314,9 @@ impl BridgeRelayer {
         let endpoint = self.endpoint_for(chain)?;
         tracing::debug!(
             "Fetching epoch {} attestation from {:?} at {}",
-            epoch, chain, endpoint,
+            epoch,
+            chain,
+            endpoint,
         );
 
         let url = format!("{endpoint}/pil/v1/epoch/{epoch}");
@@ -296,10 +363,7 @@ impl BridgeRelayer {
     }
 
     /// Verify an epoch attestation's light-client proof.
-    fn verify_attestation(
-        &self,
-        attestation: &EpochAttestation,
-    ) -> Result<(), BridgeError> {
+    fn verify_attestation(&self, attestation: &EpochAttestation) -> Result<(), BridgeError> {
         // Check timestamp is not too old (within 24 hours)
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -325,49 +389,72 @@ impl BridgeRelayer {
         match attestation.source_chain {
             ChainDomain::CardanoMainnet
             | ChainDomain::CardanoPreprod
-            | ChainDomain::CardanoPreview => {
-                self.verify_mithril_proof(attestation)
-            }
-            _ => {
-                self.verify_tendermint_proof(attestation)
-            }
+            | ChainDomain::CardanoPreview => self.verify_mithril_proof(attestation),
+            _ => self.verify_tendermint_proof(attestation),
         }
     }
 
+    /// Minimum acceptable proof length in bytes.
+    /// Below this threshold the proof is considered malformed.
+    const MIN_PROOF_LEN: usize = 32;
+
     /// Verify a Cardano Mithril light-client proof.
-    fn verify_mithril_proof(
-        &self,
-        attestation: &EpochAttestation,
-    ) -> Result<(), BridgeError> {
+    fn verify_mithril_proof(&self, attestation: &EpochAttestation) -> Result<(), BridgeError> {
         tracing::debug!(
             "Verifying Mithril proof for epoch {} from {:?}",
             attestation.epoch,
             attestation.source_chain,
         );
-        // Production: verify Mithril multi-signature on the epoch root
-        // The Mithril certificate chain ensures the epoch root was
-        // signed by a quorum of Cardano SPOs.
+
         if attestation.proof.is_empty() {
-            tracing::debug!("No proof attached — accepting in dev mode");
+            // Dev/test mode: accept empty proofs with a warning
+            tracing::warn!(
+                "No Mithril proof attached for epoch {} — accepting in dev mode",
+                attestation.epoch,
+            );
+            return Ok(());
         }
+
+        // Validate proof has minimum plausible length
+        if attestation.proof.len() < Self::MIN_PROOF_LEN {
+            return Err(BridgeError::VerificationFailed(format!(
+                "Mithril proof too short: {} bytes (min {})",
+                attestation.proof.len(),
+                Self::MIN_PROOF_LEN,
+            )));
+        }
+
+        // Production TODO: verify Mithril multi-signature certificate chain
+        // ensuring the epoch root was signed by a quorum of Cardano SPOs.
         Ok(())
     }
 
     /// Verify a Cosmos Tendermint/CometBFT light-client proof.
-    fn verify_tendermint_proof(
-        &self,
-        attestation: &EpochAttestation,
-    ) -> Result<(), BridgeError> {
+    fn verify_tendermint_proof(&self, attestation: &EpochAttestation) -> Result<(), BridgeError> {
         tracing::debug!(
             "Verifying Tendermint proof for epoch {} from {:?}",
             attestation.epoch,
             attestation.source_chain,
         );
-        // Production: verify CometBFT validator signatures on the block
-        // containing the epoch finalization tx.
+
         if attestation.proof.is_empty() {
-            tracing::debug!("No proof attached — accepting in dev mode");
+            tracing::warn!(
+                "No Tendermint proof attached for epoch {} — accepting in dev mode",
+                attestation.epoch,
+            );
+            return Ok(());
         }
+
+        if attestation.proof.len() < Self::MIN_PROOF_LEN {
+            return Err(BridgeError::VerificationFailed(format!(
+                "Tendermint proof too short: {} bytes (min {})",
+                attestation.proof.len(),
+                Self::MIN_PROOF_LEN,
+            )));
+        }
+
+        // Production TODO: verify CometBFT validator signatures on the block
+        // containing the epoch finalization tx.
         Ok(())
     }
 
@@ -389,14 +476,10 @@ impl BridgeRelayer {
             | ChainDomain::Dymension
             | ChainDomain::Stargaze
             | ChainDomain::Akash
-            | ChainDomain::Juno => {
-                self.submit_to_cosmos(destination, attestation).await
-            }
+            | ChainDomain::Juno => self.submit_to_cosmos(destination, attestation).await,
             ChainDomain::CardanoMainnet
             | ChainDomain::CardanoPreprod
-            | ChainDomain::CardanoPreview => {
-                self.submit_to_cardano(attestation).await
-            }
+            | ChainDomain::CardanoPreview => self.submit_to_cardano(attestation).await,
             _ => {
                 tracing::warn!("Unsupported destination chain: {:?}", destination);
                 Err(BridgeError::UnsupportedChain(destination))
@@ -427,7 +510,10 @@ impl BridgeRelayer {
         };
 
         if self.config.dry_run {
-            tracing::debug!("Dry-run: skipping Cosmos submission for epoch {}", attestation.epoch);
+            tracing::debug!(
+                "Dry-run: skipping Cosmos submission for epoch {}",
+                attestation.epoch
+            );
             return Ok(());
         }
 
@@ -461,10 +547,7 @@ impl BridgeRelayer {
     }
 
     /// Submit an epoch root attestation to Cardano.
-    async fn submit_to_cardano(
-        &self,
-        attestation: &EpochAttestation,
-    ) -> Result<(), BridgeError> {
+    async fn submit_to_cardano(&self, attestation: &EpochAttestation) -> Result<(), BridgeError> {
         tracing::info!(
             "Submitting epoch {} from {:?} to Cardano",
             attestation.epoch,
@@ -472,7 +555,10 @@ impl BridgeRelayer {
         );
 
         if self.config.dry_run {
-            tracing::debug!("Dry-run: skipping Cardano submission for epoch {}", attestation.epoch);
+            tracing::debug!(
+                "Dry-run: skipping Cardano submission for epoch {}",
+                attestation.epoch
+            );
             return Ok(());
         }
         // Build a Cardano transaction submission request:
@@ -507,8 +593,13 @@ impl BridgeRelayer {
         Ok(())
     }
 
-    /// Process the pending attestation retry queue.
+    /// Process the pending attestation retry queue with exponential backoff.
     async fn process_pending_queue(&mut self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
         let pending_items: Vec<_> = self.pending_queue.drain(..).collect();
         let mut still_pending = Vec::new();
 
@@ -521,6 +612,12 @@ impl BridgeRelayer {
                     pending.retries,
                 );
                 self.metrics.relay_failures += 1;
+                continue;
+            }
+
+            // Exponential backoff: skip if not yet time
+            if now < pending.next_retry_at {
+                still_pending.push(pending);
                 continue;
             }
 
@@ -547,6 +644,9 @@ impl BridgeRelayer {
                         e,
                     );
                     pending.retries += 1;
+                    // Exponential backoff: 2^retries seconds (capped at 300s)
+                    let backoff = (1u64 << pending.retries.min(9)).min(300);
+                    pending.next_retry_at = now + backoff;
                     still_pending.push(pending);
                 }
             }
@@ -555,7 +655,7 @@ impl BridgeRelayer {
         self.pending_queue = still_pending;
     }
 
-    /// Queue an attestation for retry.
+    /// Queue an attestation for retry with exponential backoff.
     pub fn queue_for_retry(
         &mut self,
         attestation: EpochAttestation,
@@ -567,7 +667,15 @@ impl BridgeRelayer {
             destination,
             retries: 0,
             max_retries,
+            next_retry_at: 0, // eligible immediately on first attempt
         });
+    }
+
+    /// Compute the backoff delay for a given retry count.
+    /// Uses exponential backoff: 2^retries seconds, capped at 300s.
+    pub fn backoff_delay(retries: u32) -> Duration {
+        let secs = (1u64 << retries.min(9)).min(300);
+        Duration::from_secs(secs)
     }
 
     /// Get the latest relayed epoch for a chain pair.
@@ -609,6 +717,8 @@ pub enum BridgeError {
     StaleAttestation { epoch: u64, age_secs: u64 },
     #[error("unsupported chain: {0:?}")]
     UnsupportedChain(ChainDomain),
+    #[error("rate limited: {src:?} → {dst:?}")]
+    RateLimited { src: ChainDomain, dst: ChainDomain },
 }
 
 #[cfg(test)]
@@ -678,7 +788,10 @@ mod tests {
                 )
                 .await;
 
-            assert!(matches!(result, Err(BridgeError::EpochAlreadyRelayed { epoch: 1 })));
+            assert!(matches!(
+                result,
+                Err(BridgeError::EpochAlreadyRelayed { epoch: 1 })
+            ));
             assert_eq!(relayer.metrics().epochs_relayed, 1);
         });
     }
@@ -717,10 +830,7 @@ mod tests {
             }
 
             assert_eq!(
-                relayer.latest_relayed_epoch(
-                    ChainDomain::CosmosHub,
-                    ChainDomain::CardanoMainnet,
-                ),
+                relayer.latest_relayed_epoch(ChainDomain::CosmosHub, ChainDomain::CardanoMainnet,),
                 Some(3),
             );
             assert_eq!(relayer.metrics().epochs_relayed, 3);
@@ -759,5 +869,153 @@ mod tests {
         );
         // Verify registration didn't panic
         assert_eq!(relayer.cosmos_sync.len(), 1);
+    }
+
+    #[test]
+    fn rate_limiter_basic() {
+        let mut limiter = RateLimiter::new(3, 60);
+        let pair = (1, 10);
+        let now = 1000;
+
+        assert!(limiter.try_acquire(pair, now));
+        assert!(limiter.try_acquire(pair, now + 1));
+        assert!(limiter.try_acquire(pair, now + 2));
+        // 4th should be rejected
+        assert!(!limiter.try_acquire(pair, now + 3));
+
+        // After window expires, should work again
+        assert!(limiter.try_acquire(pair, now + 61));
+    }
+
+    #[test]
+    fn rate_limiter_remaining() {
+        let mut limiter = RateLimiter::new(5, 60);
+        let pair = (1, 10);
+        let now = 1000;
+
+        assert_eq!(limiter.remaining(pair, now), 5);
+        limiter.try_acquire(pair, now);
+        assert_eq!(limiter.remaining(pair, now), 4);
+        limiter.try_acquire(pair, now);
+        limiter.try_acquire(pair, now);
+        assert_eq!(limiter.remaining(pair, now), 2);
+    }
+
+    #[test]
+    fn rate_limiter_independent_pairs() {
+        let mut limiter = RateLimiter::new(2, 60);
+        let pair_a = (1, 10);
+        let pair_b = (10, 1);
+        let now = 1000;
+
+        assert!(limiter.try_acquire(pair_a, now));
+        assert!(limiter.try_acquire(pair_a, now));
+        assert!(!limiter.try_acquire(pair_a, now));
+
+        // Different pair is independent
+        assert!(limiter.try_acquire(pair_b, now));
+        assert!(limiter.try_acquire(pair_b, now));
+        assert!(!limiter.try_acquire(pair_b, now));
+    }
+
+    #[test]
+    fn relay_epoch_rate_limited() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let mut relayer = BridgeRelayer::new(test_config());
+            // Set a tight rate limit: 2 per 60s
+            relayer.rate_limiter = RateLimiter::new(2, 60);
+
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            for epoch in 1..=2 {
+                let att = EpochAttestation {
+                    source_chain: ChainDomain::CardanoMainnet,
+                    epoch,
+                    nullifier_root: [0u8; 32],
+                    proof: vec![],
+                    timestamp: now,
+                };
+                relayer
+                    .relay_epoch(ChainDomain::CardanoMainnet, ChainDomain::CosmosHub, att)
+                    .await
+                    .unwrap();
+            }
+
+            // 3rd relay should be rate limited
+            let att = EpochAttestation {
+                source_chain: ChainDomain::CardanoMainnet,
+                epoch: 3,
+                nullifier_root: [0u8; 32],
+                proof: vec![],
+                timestamp: now,
+            };
+            let result = relayer
+                .relay_epoch(ChainDomain::CardanoMainnet, ChainDomain::CosmosHub, att)
+                .await;
+            assert!(matches!(result, Err(BridgeError::RateLimited { .. })));
+            assert_eq!(relayer.metrics().rate_limited, 1);
+        });
+    }
+
+    #[test]
+    fn backoff_delay_exponential() {
+        assert_eq!(BridgeRelayer::backoff_delay(0).as_secs(), 1);
+        assert_eq!(BridgeRelayer::backoff_delay(1).as_secs(), 2);
+        assert_eq!(BridgeRelayer::backoff_delay(2).as_secs(), 4);
+        assert_eq!(BridgeRelayer::backoff_delay(3).as_secs(), 8);
+        assert_eq!(BridgeRelayer::backoff_delay(5).as_secs(), 32);
+        // Capped at 300s
+        assert_eq!(BridgeRelayer::backoff_delay(9).as_secs(), 300);
+        assert_eq!(BridgeRelayer::backoff_delay(20).as_secs(), 300);
+    }
+
+    #[test]
+    fn short_proof_rejected() {
+        let relayer = BridgeRelayer::new(test_config());
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Mithril proof too short
+        let att = EpochAttestation {
+            source_chain: ChainDomain::CardanoMainnet,
+            epoch: 1,
+            nullifier_root: [1u8; 32],
+            proof: vec![0u8; 10], // < 32 min
+            timestamp: now,
+        };
+        let result = relayer.verify_attestation(&att);
+        assert!(matches!(result, Err(BridgeError::VerificationFailed(_))));
+
+        // Tendermint proof too short
+        let att2 = EpochAttestation {
+            source_chain: ChainDomain::CosmosHub,
+            epoch: 1,
+            nullifier_root: [1u8; 32],
+            proof: vec![0u8; 16],
+            timestamp: now,
+        };
+        let result2 = relayer.verify_attestation(&att2);
+        assert!(matches!(result2, Err(BridgeError::VerificationFailed(_))));
+
+        // Valid-length proof passes
+        let att3 = EpochAttestation {
+            source_chain: ChainDomain::CardanoMainnet,
+            epoch: 1,
+            nullifier_root: [1u8; 32],
+            proof: vec![0u8; 64],
+            timestamp: now,
+        };
+        assert!(relayer.verify_attestation(&att3).is_ok());
     }
 }

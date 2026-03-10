@@ -1,5 +1,4 @@
 use crate::types::Base;
-use ff::Field;
 use serde::{Deserialize, Serialize};
 
 /// Chain identifiers for domain separation across supported ecosystems.

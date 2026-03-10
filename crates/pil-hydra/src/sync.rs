@@ -152,7 +152,7 @@ impl L1SyncState {
             .as_slice()
             .try_into()
             .unwrap_or([0u8; 32]);
-        self.committed_root = Some(Base::from_repr_vartime(root_bytes.into()).unwrap_or(Base::from(0u64)));
+        self.committed_root = Some(Base::from_repr_vartime(root_bytes).unwrap_or(Base::from(0u64)));
         self.committed_snapshot = Some(snapshot_number);
         self.committed_l1_epoch = Some(l1_epoch);
 
@@ -189,12 +189,11 @@ impl Default for L1SyncState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ff::Field;
 
     fn make_snapshot(number: u64) -> Snapshot {
         Snapshot {
             snapshot_number: number,
-            pool_root: Base::from((number + 1) as u64),
+            pool_root: Base::from(number + 1),
             nullifier_count: number * 2,
             note_count: number * 3 + 1,
             l2_tx_count: 5,
@@ -248,7 +247,13 @@ mod tests {
         assert_eq!(sync.pending_count(), 3);
 
         // Confirming s1 clears s0 and s1, keeps s2
-        let c1_id = sync.pending.iter().find(|p| p.snapshot_number == 1).unwrap().snapshot_id_hex.clone();
+        let c1_id = sync
+            .pending
+            .iter()
+            .find(|p| p.snapshot_number == 1)
+            .unwrap()
+            .snapshot_id_hex
+            .clone();
         sync.confirm_commit(1, 11, &c1_id).unwrap();
         assert_eq!(sync.pending_count(), 1);
         assert_eq!(sync.committed_snapshot(), Some(1));

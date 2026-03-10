@@ -205,10 +205,12 @@ function encodeField(f: PlutusField): CSL.PlutusData {
 /** Create a TransactionBuilder with Cardano Babbage-era protocol params. */
 function createTxBuilder(): CSL.TransactionBuilder {
   const cfg = CSL.TransactionBuilderConfigBuilder.new()
-    .fee_algo(CSL.LinearFee.new(
-      CSL.BigNum.from_str("44"),
-      CSL.BigNum.from_str("155381"),
-    ))
+    .fee_algo(
+      CSL.LinearFee.new(
+        CSL.BigNum.from_str("44"),
+        CSL.BigNum.from_str("155381"),
+      ),
+    )
     .pool_deposit(CSL.BigNum.from_str("500000000"))
     .key_deposit(CSL.BigNum.from_str("2000000"))
     .coins_per_utxo_byte(CSL.BigNum.from_str("4310"))

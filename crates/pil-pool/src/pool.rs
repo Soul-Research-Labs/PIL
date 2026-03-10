@@ -1,6 +1,5 @@
 use pil_primitives::types::{Base, Commitment, Nullifier};
 use pil_tree::IncrementalMerkleTree;
-use std::collections::HashSet;
 
 use super::nullifier_set::NullifierSet;
 

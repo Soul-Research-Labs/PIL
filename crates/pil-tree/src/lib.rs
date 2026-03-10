@@ -4,7 +4,6 @@
 //! Depth 32 supports up to 2^32 (~4 billion) note commitments.
 
 use ff::Field;
-use pasta_curves::pallas;
 use pil_primitives::{hash::poseidon_hash2, types::Base};
 
 pub const TREE_DEPTH: usize = 32;
@@ -15,7 +14,8 @@ fn empty_hashes() -> [Base; TREE_DEPTH] {
     // Level 0: hash of empty leaf
     hashes[0] = Base::ZERO;
     for i in 1..TREE_DEPTH {
-        hashes[i] = poseidon_hash2(hashes[i - 1], hashes[i - 1]);
+        let prev = hashes[i - 1];
+        hashes[i] = poseidon_hash2(prev, prev);
     }
     hashes
 }
@@ -40,8 +40,8 @@ impl IncrementalMerkleTree {
         let empties = empty_hashes();
         // Compute the root of the empty tree
         let mut root = Base::ZERO;
-        for i in 0..TREE_DEPTH {
-            root = poseidon_hash2(root, empties[i]);
+        for empty in &empties {
+            root = poseidon_hash2(root, *empty);
         }
         Self {
             frontier: [Base::ZERO; TREE_DEPTH],
@@ -61,11 +61,11 @@ impl IncrementalMerkleTree {
         let mut current = leaf;
         let mut index = idx;
 
-        for level in 0..TREE_DEPTH {
+        for (level, empty) in empties.iter().enumerate() {
             if index & 1 == 0 {
                 // Left child: store in frontier, pair with empty right sibling
                 self.frontier[level] = current;
-                current = poseidon_hash2(current, empties[level]);
+                current = poseidon_hash2(current, *empty);
             } else {
                 // Right child: pair with frontier (left sibling)
                 current = poseidon_hash2(self.frontier[level], current);
@@ -185,7 +185,7 @@ mod tests {
     fn multiple_appends_sequential_indices() {
         let mut tree = IncrementalMerkleTree::new();
         for i in 0..10 {
-            let idx = tree.append(Base::from(i as u64)).unwrap();
+            let idx = tree.append(Base::from(i)).unwrap();
             assert_eq!(idx, i);
         }
         assert_eq!(tree.leaf_count(), 10);

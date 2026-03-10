@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Specification for generated Cardano validators.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CardanoValidatorSpec {
     /// Privacy pool validator hash (after compilation).
     pub pool_validator_hash: Option<[u8; 28]>,

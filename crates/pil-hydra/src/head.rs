@@ -251,10 +251,7 @@ mod tests {
     fn test_config() -> HydraHeadConfig {
         HydraHeadConfig {
             head_id: "test-head-1".to_string(),
-            participants: vec![
-                "alice_pkh".to_string(),
-                "bob_pkh".to_string(),
-            ],
+            participants: vec!["alice_pkh".to_string(), "bob_pkh".to_string()],
             chain_domain: ChainDomain::CardanoPreprod,
             snapshot_policy: SnapshotPolicy::EveryNTransactions(5),
             max_pending_txs: 100,

@@ -1,13 +1,13 @@
 //! Integration tests for cross-chain scenarios, epoch sync, and multi-user flows.
 
+use ff::Field;
+use pil_cosmos::ibc::IBCEpochSync;
+use pil_note::{keys::SpendingKey, note::Note};
+use pil_pool::{EpochManager, PrivacyPool};
 use pil_primitives::{
     domain::{ChainDomain, DomainSeparator},
     types::Base,
 };
-use pil_pool::{PrivacyPool, EpochManager};
-use pil_note::{keys::SpendingKey, note::Note};
-use pil_cosmos::ibc::IBCEpochSync;
-use ff::Field;
 use rand::rngs::OsRng;
 
 /// Test that domain-separated nullifiers prevent cross-chain replays.
@@ -22,18 +22,15 @@ fn cross_chain_nullifier_isolation() {
     let domain_cardano = DomainSeparator::new(ChainDomain::CardanoMainnet, 0);
     let domain_cosmos = DomainSeparator::new(ChainDomain::CosmosHub, 0);
 
-    let nf_cardano = pil_note::derive_nullifier_v2(
-        spending_key.to_base(),
-        commitment,
-        &domain_cardano,
-    );
-    let nf_cosmos = pil_note::derive_nullifier_v2(
-        spending_key.to_base(),
-        commitment,
-        &domain_cosmos,
-    );
+    let nf_cardano =
+        pil_note::derive_nullifier_v2(spending_key.to_base(), commitment, &domain_cardano);
+    let nf_cosmos =
+        pil_note::derive_nullifier_v2(spending_key.to_base(), commitment, &domain_cosmos);
 
-    assert_ne!(nf_cardano, nf_cosmos, "Cross-chain nullifiers must be different");
+    assert_ne!(
+        nf_cardano, nf_cosmos,
+        "Cross-chain nullifiers must be different"
+    );
 }
 
 /// Test that the same spending key produces different nullifiers for different apps.
@@ -46,18 +43,13 @@ fn app_domain_nullifier_isolation() {
     let domain_app0 = DomainSeparator::new(ChainDomain::Osmosis, 0);
     let domain_app1 = DomainSeparator::new(ChainDomain::Osmosis, 1);
 
-    let nf0 = pil_note::derive_nullifier_v2(
-        spending_key.to_base(),
-        commitment,
-        &domain_app0,
-    );
-    let nf1 = pil_note::derive_nullifier_v2(
-        spending_key.to_base(),
-        commitment,
-        &domain_app1,
-    );
+    let nf0 = pil_note::derive_nullifier_v2(spending_key.to_base(), commitment, &domain_app0);
+    let nf1 = pil_note::derive_nullifier_v2(spending_key.to_base(), commitment, &domain_app1);
 
-    assert_ne!(nf0, nf1, "Different app IDs must produce different nullifiers");
+    assert_ne!(
+        nf0, nf1,
+        "Different app IDs must produce different nullifiers"
+    );
 }
 
 /// Test the epoch lifecycle: deposit → finalize epoch → query epoch root.
@@ -99,11 +91,7 @@ fn multi_user_flow() {
     assert_eq!(pool.note_count(), 2);
 
     // User A transfers 200 to User B
-    let nf_a = pil_note::derive_nullifier_v2(
-        sk_a.to_base(),
-        note_a.commitment(),
-        &domain,
-    );
+    let nf_a = pil_note::derive_nullifier_v2(sk_a.to_base(), note_a.commitment(), &domain);
 
     let note_to_b = Note::new(200, sk_b.owner(), 0);
     let note_change_a = Note::new(300, sk_a.owner(), 0);
@@ -121,13 +109,10 @@ fn multi_user_flow() {
     assert_eq!(pool.note_count(), 4);
 
     // User B withdraws 200
-    let nf_b_out = pil_note::derive_nullifier_v2(
-        sk_b.to_base(),
-        note_to_b.commitment(),
-        &domain,
-    );
+    let nf_b_out = pil_note::derive_nullifier_v2(sk_b.to_base(), note_to_b.commitment(), &domain);
 
-    pool.process_withdraw(&[nf_b_out], &[], 200, 0, &[]).unwrap();
+    pool.process_withdraw(&[nf_b_out], &[], 200, 0, &[])
+        .unwrap();
     assert_eq!(pool.balance(), 600);
 }
 
@@ -146,11 +131,7 @@ fn double_spend_across_epochs() {
     epoch_mgr.finalize_epoch(pool.root());
 
     // Spend in epoch 1
-    let nf = pil_note::derive_nullifier_v2(
-        sk.to_base(),
-        note.commitment(),
-        &domain,
-    );
+    let nf = pil_note::derive_nullifier_v2(sk.to_base(), note.commitment(), &domain);
 
     pool.process_withdraw(&[nf], &[], 100, 0, &[]).unwrap();
 
@@ -169,21 +150,13 @@ fn ibc_epoch_sync_multi_chain() {
     sync_b.register_channel("channel-2".to_string(), 11); // → Osmosis
 
     // Osmosis → Neutron
-    let packet_a = sync_a.create_epoch_packet(
-        0,
-        "aabbccddee".to_string(),
-        50,
-        "cumroot_a_0".to_string(),
-    );
+    let packet_a =
+        sync_a.create_epoch_packet(0, "aabbccddee".to_string(), 50, "cumroot_a_0".to_string());
     sync_b.receive_epoch_root(packet_a).unwrap();
 
     // Neutron → Osmosis
-    let packet_b = sync_b.create_epoch_packet(
-        0,
-        "1122334455".to_string(),
-        30,
-        "cumroot_b_0".to_string(),
-    );
+    let packet_b =
+        sync_b.create_epoch_packet(0, "1122334455".to_string(), 30, "cumroot_b_0".to_string());
     sync_a.receive_epoch_root(packet_b).unwrap();
 
     assert_eq!(sync_b.get_remote_epoch_root(11, 0), Some("aabbccddee"));
@@ -220,11 +193,9 @@ fn chain_domains_unique_separators() {
     for i in 0..tags.len() {
         for j in (i + 1)..tags.len() {
             assert_ne!(
-                tags[i],
-                tags[j],
+                tags[i], tags[j],
                 "Domains {:?} and {:?} must have different tags",
-                domains[i],
-                domains[j],
+                domains[i], domains[j],
             );
         }
     }
@@ -293,7 +264,8 @@ fn multi_epoch_with_operations() {
 
     let nf0 = pil_note::derive_nullifier_v2(sk.to_base(), n0.commitment(), &domain);
     let out = Note::new(100, sk.owner(), 0);
-    pool.process_transfer(&[nf0], &[out.commitment()], &[]).unwrap();
+    pool.process_transfer(&[nf0], &[out.commitment()], &[])
+        .unwrap();
     epoch_mgr.finalize_epoch(pool.root());
 
     // Epoch 2: deposit + withdraw (deposit changes tree root)
@@ -362,7 +334,8 @@ fn full_e2e_two_user_flow() {
         &[nf_a1],
         &[note_to_b.commitment(), note_change_a.commitment()],
         &[],
-    ).unwrap();
+    )
+    .unwrap();
 
     assert_eq!(pool.balance(), 1700); // total unchanged
     assert_eq!(pool.note_count(), 5); // 3 deposits + 2 transfer outputs
@@ -370,14 +343,17 @@ fn full_e2e_two_user_flow() {
     // User B withdraws 500 (using original 200 + received 300)
     let nf_b1 = pil_note::derive_nullifier_v2(sk_b.to_base(), note_b1.commitment(), &domain);
     let nf_b2 = pil_note::derive_nullifier_v2(sk_b.to_base(), note_to_b.commitment(), &domain);
-    pool.process_withdraw(&[nf_b1, nf_b2], &[], 500, 0, &[]).unwrap();
+    pool.process_withdraw(&[nf_b1, nf_b2], &[], 500, 0, &[])
+        .unwrap();
 
     assert_eq!(pool.balance(), 1200); // 700 (A change) + 500 (A note_a2)
 
     // User A withdraws remaining
     let nf_a2 = pil_note::derive_nullifier_v2(sk_a.to_base(), note_a2.commitment(), &domain);
-    let nf_change = pil_note::derive_nullifier_v2(sk_a.to_base(), note_change_a.commitment(), &domain);
-    pool.process_withdraw(&[nf_a2, nf_change], &[], 1200, 0, &[]).unwrap();
+    let nf_change =
+        pil_note::derive_nullifier_v2(sk_a.to_base(), note_change_a.commitment(), &domain);
+    pool.process_withdraw(&[nf_a2, nf_change], &[], 1200, 0, &[])
+        .unwrap();
 
     assert_eq!(pool.balance(), 0);
     assert_eq!(pool.nullifier_count(), 5);

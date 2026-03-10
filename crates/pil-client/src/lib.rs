@@ -23,9 +23,20 @@ pub struct WalletNote {
 /// Transaction history entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TxRecord {
-    Deposit { value: u64, asset_id: u64, leaf_index: u64 },
-    Send { value: u64, asset_id: u64, recipient_owner: String },
-    Withdraw { value: u64, asset_id: u64 },
+    Deposit {
+        value: u64,
+        asset_id: u64,
+        leaf_index: u64,
+    },
+    Send {
+        value: u64,
+        asset_id: u64,
+        recipient_owner: String,
+    },
+    Withdraw {
+        value: u64,
+        asset_id: u64,
+    },
 }
 
 /// Serializable wallet snapshot for persistence.
@@ -102,7 +113,11 @@ impl Wallet {
     }
 
     /// Coin selection: pick notes that sum to at least `target`.
-    pub fn select_notes(&self, target: u64, asset_id: u64) -> Result<Vec<&WalletNote>, WalletError> {
+    pub fn select_notes(
+        &self,
+        target: u64,
+        asset_id: u64,
+    ) -> Result<Vec<&WalletNote>, WalletError> {
         let mut candidates: Vec<_> = self
             .unspent_notes()
             .into_iter()
@@ -211,8 +226,8 @@ impl Wallet {
             .map_err(|e| WalletError::Encryption(e.to_string()))?;
 
         // Encrypt with AES-256-GCM
-        let cipher = Aes256Gcm::new_from_slice(&key)
-            .map_err(|e| WalletError::Encryption(e.to_string()))?;
+        let cipher =
+            Aes256Gcm::new_from_slice(&key).map_err(|e| WalletError::Encryption(e.to_string()))?;
         let nonce_bytes: [u8; 12] = rand::random();
         let nonce = Nonce::from_slice(&nonce_bytes);
         let ciphertext = cipher
@@ -241,8 +256,8 @@ impl Wallet {
             .hash_password_into(password, salt, &mut key)
             .map_err(|e| WalletError::Encryption(e.to_string()))?;
 
-        let cipher = Aes256Gcm::new_from_slice(&key)
-            .map_err(|e| WalletError::Encryption(e.to_string()))?;
+        let cipher =
+            Aes256Gcm::new_from_slice(&key).map_err(|e| WalletError::Encryption(e.to_string()))?;
         let nonce = Nonce::from_slice(nonce_bytes);
         let plaintext = cipher
             .decrypt(nonce, ciphertext)
@@ -252,7 +267,11 @@ impl Wallet {
     }
 
     /// Save wallet encrypted to a file path.
-    pub fn save_encrypted(&self, path: &std::path::Path, password: &[u8]) -> Result<(), WalletError> {
+    pub fn save_encrypted(
+        &self,
+        path: &std::path::Path,
+        password: &[u8],
+    ) -> Result<(), WalletError> {
         let data = self.encrypt(password)?;
         std::fs::write(path, data).map_err(|e| WalletError::Io(e.to_string()))
     }
@@ -269,7 +288,9 @@ fn field_from_hex(hex_str: &str) -> Result<Base, WalletError> {
     let bytes = hex::decode(hex_str)
         .map_err(|_| WalletError::Encryption(format!("invalid hex: {hex_str}")))?;
     if bytes.len() != 32 {
-        return Err(WalletError::Encryption("field element must be 32 bytes".into()));
+        return Err(WalletError::Encryption(
+            "field element must be 32 bytes".into(),
+        ));
     }
     let mut repr = <Base as PrimeField>::Repr::default();
     repr.as_mut().copy_from_slice(&bytes);

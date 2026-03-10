@@ -1,5 +1,4 @@
 use ff::Field;
-use pasta_curves::pallas;
 use pil_primitives::{
     hash::{poseidon_hash2, poseidon_hash3},
     types::{Base, Commitment},

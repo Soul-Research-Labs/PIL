@@ -29,10 +29,7 @@ pub struct StealthAddress {
 ///
 /// - `recipient_pk`: recipient's public key point
 /// - `recipient_owner`: recipient's owner field element
-pub fn stealth_send(
-    recipient_pk: pallas::Point,
-    recipient_owner: pallas::Base,
-) -> StealthAddress {
+pub fn stealth_send(recipient_pk: pallas::Point, recipient_owner: pallas::Base) -> StealthAddress {
     let mut rng = rand::thread_rng();
     let r = pallas::Scalar::random(&mut rng);
     let ephemeral_pk = pallas::Point::generator() * r;

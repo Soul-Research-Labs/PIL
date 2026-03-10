@@ -10,7 +10,7 @@
 //! which matches our circuit field (pallas::Base).
 
 use halo2_proofs::{
-    plonk::{keygen_pk, keygen_vk, create_proof, ProvingKey, VerifyingKey},
+    plonk::{create_proof, keygen_pk, keygen_vk, ProvingKey, VerifyingKey},
     poly::commitment::Params,
     transcript::{Blake2bWrite, Challenge255},
 };
@@ -152,7 +152,11 @@ mod tests {
     #[ignore]
     fn proving_keys_setup_succeeds() {
         let keys = ProvingKeys::setup();
-        assert!(keys.is_ok(), "ProvingKeys::setup() failed: {:?}", keys.err());
+        assert!(
+            keys.is_ok(),
+            "ProvingKeys::setup() failed: {:?}",
+            keys.err()
+        );
     }
 
     #[test]

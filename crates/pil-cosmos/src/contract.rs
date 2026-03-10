@@ -198,9 +198,7 @@ impl CosmosPrivacyPool {
 
         self.sync_state();
 
-        Ok(ExecuteResponse::Withdraw {
-            exit_amount,
-        })
+        Ok(ExecuteResponse::Withdraw { exit_amount })
     }
 
     fn handle_finalize_epoch(&mut self) -> Result<ExecuteResponse, ContractError> {
@@ -342,7 +340,8 @@ mod tests {
     /// Helper: deposit a commitment with a known field element value and return its hex.
     fn deposit_field_value(pool: &mut CosmosPrivacyPool, raw: u64, amount: u64) -> String {
         let field = pil_primitives::types::Base::from(raw);
-        let hex_str = hex::encode(<pil_primitives::types::Base as ff::PrimeField>::to_repr(&field).as_ref());
+        let hex_str =
+            hex::encode(<pil_primitives::types::Base as ff::PrimeField>::to_repr(&field).as_ref());
         pool.deposit_with_amount(hex_str.clone(), amount).unwrap();
         hex_str
     }
@@ -358,18 +357,35 @@ mod tests {
         assert_eq!(pool.pool.balance(), 80);
 
         // Build a transfer: spend 2 nullifiers, produce 1 output
-        let nf1 = hex::encode(<pil_primitives::types::Base as ff::PrimeField>::to_repr(&pil_primitives::types::Base::from(1000u64)).as_ref());
-        let nf2 = hex::encode(<pil_primitives::types::Base as ff::PrimeField>::to_repr(&pil_primitives::types::Base::from(1001u64)).as_ref());
-        let out = hex::encode(<pil_primitives::types::Base as ff::PrimeField>::to_repr(&pil_primitives::types::Base::from(300u64)).as_ref());
+        let nf1 = hex::encode(
+            <pil_primitives::types::Base as ff::PrimeField>::to_repr(
+                &pil_primitives::types::Base::from(1000u64),
+            )
+            .as_ref(),
+        );
+        let nf2 = hex::encode(
+            <pil_primitives::types::Base as ff::PrimeField>::to_repr(
+                &pil_primitives::types::Base::from(1001u64),
+            )
+            .as_ref(),
+        );
+        let out = hex::encode(
+            <pil_primitives::types::Base as ff::PrimeField>::to_repr(
+                &pil_primitives::types::Base::from(300u64),
+            )
+            .as_ref(),
+        );
 
-        let result = pool.execute(ExecuteMsg::Transfer {
-            proof: hex::encode([0u8; 32]),
-            merkle_root: "00".repeat(32),
-            nullifiers: vec![nf1, nf2],
-            output_commitments: vec![out],
-            domain_chain_id: 10,
-            domain_app_id: 1,
-        }).unwrap();
+        let result = pool
+            .execute(ExecuteMsg::Transfer {
+                proof: hex::encode([0u8; 32]),
+                merkle_root: "00".repeat(32),
+                nullifiers: vec![nf1, nf2],
+                output_commitments: vec![out],
+                domain_chain_id: 10,
+                domain_app_id: 1,
+            })
+            .unwrap();
 
         match result {
             ExecuteResponse::Transfer { nullifiers_spent } => {
@@ -389,16 +405,23 @@ mod tests {
         deposit_field_value(&mut pool, 100, 50);
         assert_eq!(pool.pool.balance(), 50);
 
-        let nf = hex::encode(<pil_primitives::types::Base as ff::PrimeField>::to_repr(&pil_primitives::types::Base::from(2000u64)).as_ref());
+        let nf = hex::encode(
+            <pil_primitives::types::Base as ff::PrimeField>::to_repr(
+                &pil_primitives::types::Base::from(2000u64),
+            )
+            .as_ref(),
+        );
 
-        let result = pool.execute(ExecuteMsg::Withdraw {
-            proof: hex::encode([0u8; 32]),
-            merkle_root: "00".repeat(32),
-            nullifiers: vec![nf],
-            change_commitments: vec![],
-            exit_amount: 30,
-            recipient: "cosmos1recipient".to_string(),
-        }).unwrap();
+        let result = pool
+            .execute(ExecuteMsg::Withdraw {
+                proof: hex::encode([0u8; 32]),
+                merkle_root: "00".repeat(32),
+                nullifiers: vec![nf],
+                change_commitments: vec![],
+                exit_amount: 30,
+                recipient: "cosmos1recipient".to_string(),
+            })
+            .unwrap();
 
         match result {
             ExecuteResponse::Withdraw { exit_amount } => {
@@ -414,7 +437,12 @@ mod tests {
         let mut pool = make_pool();
         deposit_field_value(&mut pool, 100, 50);
 
-        let nf = hex::encode(<pil_primitives::types::Base as ff::PrimeField>::to_repr(&pil_primitives::types::Base::from(3000u64)).as_ref());
+        let nf = hex::encode(
+            <pil_primitives::types::Base as ff::PrimeField>::to_repr(
+                &pil_primitives::types::Base::from(3000u64),
+            )
+            .as_ref(),
+        );
 
         pool.execute(ExecuteMsg::Withdraw {
             proof: hex::encode([0u8; 32]),
@@ -423,7 +451,8 @@ mod tests {
             change_commitments: vec![],
             exit_amount: 10,
             recipient: "cosmos1x".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Same nullifier again → should fail
         let err = pool.execute(ExecuteMsg::Withdraw {
@@ -444,7 +473,8 @@ mod tests {
             source_chain_id: 1,
             epoch: 5,
             nullifier_root: "ab".repeat(32),
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(pool.remote_epoch_roots.len(), 1);
         assert_eq!(pool.remote_epoch_roots[0].epoch, 5);
     }

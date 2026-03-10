@@ -17,9 +17,7 @@ use ark_bls12_381::Fr as BlsFr;
 use ark_r1cs_std::alloc::AllocVar;
 use ark_r1cs_std::eq::EqGadget;
 use ark_r1cs_std::fields::fp::FpVar;
-use ark_relations::r1cs::{
-    ConstraintSynthesizer, ConstraintSystemRef, SynthesisError,
-};
+use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 use ark_std::vec::Vec;
 
 /// Maximum number of public input field elements from the inner Halo2 proof.
@@ -61,11 +59,7 @@ impl WrapperCircuit {
     }
 
     /// Create a circuit from the inner proof's public inputs.
-    pub fn new(
-        inner_public_inputs: Vec<BlsFr>,
-        public_inputs_hash: BlsFr,
-        proof_type: u8,
-    ) -> Self {
+    pub fn new(inner_public_inputs: Vec<BlsFr>, public_inputs_hash: BlsFr, proof_type: u8) -> Self {
         let num_inputs = inner_public_inputs.len();
         let mut padded = inner_public_inputs;
         padded.resize(MAX_PUBLIC_INPUTS, BlsFr::from(0u64));
@@ -79,20 +73,14 @@ impl WrapperCircuit {
 }
 
 impl ConstraintSynthesizer<BlsFr> for WrapperCircuit {
-    fn generate_constraints(
-        self,
-        cs: ConstraintSystemRef<BlsFr>,
-    ) -> Result<(), SynthesisError> {
+    fn generate_constraints(self, cs: ConstraintSystemRef<BlsFr>) -> Result<(), SynthesisError> {
         // --- Allocate witnesses ---
 
         // Inner public inputs (private witnesses in the wrapper)
         let input_vars: Vec<FpVar<BlsFr>> = self
             .inner_public_inputs
             .iter()
-            .enumerate()
-            .map(|(i, val)| {
-                FpVar::new_witness(cs.clone(), || Ok(*val))
-            })
+            .map(|val| FpVar::new_witness(cs.clone(), || Ok(*val)))
             .collect::<Result<Vec<_>, _>>()?;
 
         // Proof type tag
@@ -100,8 +88,7 @@ impl ConstraintSynthesizer<BlsFr> for WrapperCircuit {
             FpVar::new_witness(cs.clone(), || Ok(BlsFr::from(self.proof_type as u64)))?;
 
         // --- Public input: hash of inner public inputs ---
-        let claimed_hash =
-            FpVar::new_input(cs.clone(), || Ok(self.public_inputs_hash))?;
+        let claimed_hash = FpVar::new_input(cs.clone(), || Ok(self.public_inputs_hash))?;
 
         // --- Constraint: compute hash and enforce equality ---
         //
@@ -114,8 +101,7 @@ impl ConstraintSynthesizer<BlsFr> for WrapperCircuit {
         // without breaking the discrete log assumption on BLS12-381.
         //
         // For production, replace with a Poseidon gadget over BLS12-381.
-        let mut running_sum =
-            FpVar::new_constant(cs.clone(), BlsFr::from(0u64))?;
+        let mut running_sum = FpVar::new_constant(cs.clone(), BlsFr::from(0u64))?;
 
         for (i, var) in input_vars.iter().enumerate() {
             let coeff = FpVar::new_constant(cs.clone(), BlsFr::from((i + 1) as u64))?;
@@ -124,10 +110,8 @@ impl ConstraintSynthesizer<BlsFr> for WrapperCircuit {
         }
 
         // Add proof type contribution
-        let type_coeff = FpVar::new_constant(
-            cs.clone(),
-            BlsFr::from((MAX_PUBLIC_INPUTS + 1) as u64),
-        )?;
+        let type_coeff =
+            FpVar::new_constant(cs.clone(), BlsFr::from((MAX_PUBLIC_INPUTS + 1) as u64))?;
         running_sum = &running_sum + &(&proof_type_var * &type_coeff);
 
         // Enforce hash equality
@@ -217,6 +201,9 @@ mod tests {
         // Should be a small circuit
         let num_constraints = cs.num_constraints();
         println!("Wrapper circuit constraints: {num_constraints}");
-        assert!(num_constraints < 5000, "Circuit too large: {num_constraints}");
+        assert!(
+            num_constraints < 5000,
+            "Circuit too large: {num_constraints}"
+        );
     }
 }

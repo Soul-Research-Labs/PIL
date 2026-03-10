@@ -95,7 +95,10 @@ pub enum QueryMsg {
     /// Check if a nullifier has been spent.
     NullifierSpent { nullifier: String },
     /// Get epoch roots (for cross-chain verification).
-    EpochRoots { from_epoch: Option<u64>, limit: Option<u32> },
+    EpochRoots {
+        from_epoch: Option<u64>,
+        limit: Option<u32>,
+    },
     /// Get remote epoch roots received via IBC.
     RemoteEpochRoots { chain_id: u32 },
     /// Get pool configuration.

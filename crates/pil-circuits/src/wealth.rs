@@ -13,10 +13,9 @@
 //! Key constraint: `sum - threshold - slack = 0`, with `slack >= 0`
 //! proven by decomposition (the slack fits in 64 bits).
 
-use ff::Field;
 use halo2_proofs::{
-    circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
-    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Expression, Instance, Selector},
+    circuit::{Layouter, SimpleFloorPlanner, Value},
+    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance, Selector},
     poly::Rotation,
 };
 use pasta_curves::pallas;
@@ -116,7 +115,11 @@ impl Circuit<pallas::Base> for WealthProofCircuit {
             || "wealth_proof",
             |mut region| {
                 // Row 0: initial accumulator = first note value
-                let first_val = self.note_values.first().copied().unwrap_or(Value::unknown());
+                let first_val = self
+                    .note_values
+                    .first()
+                    .copied()
+                    .unwrap_or(Value::unknown());
 
                 region.assign_advice(|| "val_0", config.value, 0, || first_val)?;
                 region.assign_advice(|| "accum_0", config.accum, 0, || first_val)?;
@@ -142,12 +145,8 @@ impl Circuit<pallas::Base> for WealthProofCircuit {
                 region.assign_advice(|| "sum", config.accum, n, || running)?;
 
                 // Row n+1: threshold (constrained to public instance)
-                let thresh_cell = region.assign_advice(
-                    || "threshold",
-                    config.accum,
-                    n + 1,
-                    || self.threshold,
-                )?;
+                let thresh_cell =
+                    region.assign_advice(|| "threshold", config.accum, n + 1, || self.threshold)?;
 
                 Ok(thresh_cell)
             },
@@ -186,10 +185,7 @@ mod tests {
 
     #[test]
     fn wealth_proof_exact_threshold() {
-        let values: Vec<Value<Fp>> = vec![
-            Value::known(Fp::from(75)),
-            Value::known(Fp::from(75)),
-        ];
+        let values: Vec<Value<Fp>> = vec![Value::known(Fp::from(75)), Value::known(Fp::from(75))];
         let threshold = Value::known(Fp::from(150));
 
         let circuit = WealthProofCircuit {
@@ -204,10 +200,7 @@ mod tests {
 
     #[test]
     fn wealth_proof_insufficient_fails() {
-        let values: Vec<Value<Fp>> = vec![
-            Value::known(Fp::from(50)),
-            Value::known(Fp::from(30)),
-        ];
+        let values: Vec<Value<Fp>> = vec![Value::known(Fp::from(50)), Value::known(Fp::from(30))];
         // sum = 80, threshold = 100 → slack would be negative → should fail
         let threshold = Value::known(Fp::from(100));
 

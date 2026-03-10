@@ -31,7 +31,7 @@ use ff::Field;
 use halo2_proofs::circuit::Value;
 use pil_circuits::transfer::TransferCircuit;
 use pil_circuits::withdraw::WithdrawCircuit;
-use pil_client::{Wallet, TxRecord};
+use pil_client::{TxRecord, Wallet};
 use pil_note::{keys::SpendingKey, note::Note};
 use pil_pool::PrivacyPool;
 use pil_primitives::{
@@ -105,12 +105,11 @@ impl Pil {
             .map_err(|e| PilError::Pool(e.to_string()))?;
 
         self.wallet.add_note(note, receipt.leaf_index);
-        self.wallet
-            .record_tx(TxRecord::Deposit {
-                value,
-                asset_id: 0,
-                leaf_index: receipt.leaf_index,
-            });
+        self.wallet.record_tx(TxRecord::Deposit {
+            value,
+            asset_id: 0,
+            leaf_index: receipt.leaf_index,
+        });
 
         Ok(DepositResult {
             leaf_index: receipt.leaf_index,
@@ -135,7 +134,11 @@ impl Pil {
         let nullifiers: Vec<_> = selected
             .iter()
             .map(|n| {
-                pil_note::derive_nullifier_v2(self.spending_key.to_base(), n.note.commitment(), &self.domain)
+                pil_note::derive_nullifier_v2(
+                    self.spending_key.to_base(),
+                    n.note.commitment(),
+                    &self.domain,
+                )
             })
             .collect();
 
@@ -155,11 +158,11 @@ impl Pil {
         let circuit = TransferCircuit {
             spending_key: Value::known(self.spending_key.to_base()),
             input_values: [
-                Value::known(input_values.get(0).copied().unwrap_or(Base::ZERO)),
+                Value::known(input_values.first().copied().unwrap_or(Base::ZERO)),
                 Value::known(input_values.get(1).copied().unwrap_or(Base::ZERO)),
             ],
             input_randomness: [
-                Value::known(input_randomness.get(0).copied().unwrap_or(Base::ZERO)),
+                Value::known(input_randomness.first().copied().unwrap_or(Base::ZERO)),
                 Value::known(input_randomness.get(1).copied().unwrap_or(Base::ZERO)),
             ],
             input_asset_ids: [Value::known(Base::ZERO); 2],
@@ -188,11 +191,7 @@ impl Pil {
         // Process transfer in the pool
         let receipt = self
             .pool
-            .process_transfer(
-                &nullifiers,
-                &[recipient_cm, change_cm],
-                &proof_bytes,
-            )
+            .process_transfer(&nullifiers, &[recipient_cm, change_cm], &proof_bytes)
             .map_err(|e| PilError::Pool(e.to_string()))?;
 
         // Update wallet
@@ -227,7 +226,11 @@ impl Pil {
         let nullifiers: Vec<_> = selected
             .iter()
             .map(|n| {
-                pil_note::derive_nullifier_v2(self.spending_key.to_base(), n.note.commitment(), &self.domain)
+                pil_note::derive_nullifier_v2(
+                    self.spending_key.to_base(),
+                    n.note.commitment(),
+                    &self.domain,
+                )
             })
             .collect();
 
@@ -241,13 +244,10 @@ impl Pil {
         let circuit = WithdrawCircuit {
             spending_key: Value::known(self.spending_key.to_base()),
             input_values: [
-                Value::known(input_values.get(0).copied().unwrap_or(Base::ZERO)),
+                Value::known(input_values.first().copied().unwrap_or(Base::ZERO)),
                 Value::known(input_values.get(1).copied().unwrap_or(Base::ZERO)),
             ],
-            output_values: [
-                Value::known(Base::from(change)),
-                Value::known(Base::ZERO),
-            ],
+            output_values: [Value::known(Base::from(change)), Value::known(Base::ZERO)],
             exit_value: Value::known(Base::from(value)),
             fee: Value::known(Base::ZERO),
         };
@@ -267,10 +267,8 @@ impl Pil {
         if change > 0 {
             self.wallet.add_note(change_note, receipt.leaf_indices[0]);
         }
-        self.wallet.record_tx(TxRecord::Withdraw {
-            value,
-            asset_id: 0,
-        });
+        self.wallet
+            .record_tx(TxRecord::Withdraw { value, asset_id: 0 });
 
         Ok(WithdrawResult {
             exit_value: value,
@@ -327,11 +325,11 @@ impl Pil {
         let circuit = TransferCircuit {
             spending_key: Value::known(self.spending_key.to_base()),
             input_values: [
-                Value::known(input_values.get(0).copied().unwrap_or(Base::ZERO)),
+                Value::known(input_values.first().copied().unwrap_or(Base::ZERO)),
                 Value::known(input_values.get(1).copied().unwrap_or(Base::ZERO)),
             ],
             input_randomness: [
-                Value::known(input_randomness.get(0).copied().unwrap_or(Base::ZERO)),
+                Value::known(input_randomness.first().copied().unwrap_or(Base::ZERO)),
                 Value::known(input_randomness.get(1).copied().unwrap_or(Base::ZERO)),
             ],
             input_asset_ids: [Value::known(Base::ZERO); 2],

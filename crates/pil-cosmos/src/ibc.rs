@@ -78,10 +78,7 @@ impl IBCEpochSync {
     }
 
     /// Handle a received epoch root from a remote chain.
-    pub fn receive_epoch_root(
-        &mut self,
-        packet: EpochSyncPacket,
-    ) -> Result<(), IBCSyncError> {
+    pub fn receive_epoch_root(&mut self, packet: EpochSyncPacket) -> Result<(), IBCSyncError> {
         // Verify source chain is a known peer
         let is_known = self
             .channels
@@ -118,22 +115,15 @@ impl IBCEpochSync {
         }
 
         // Store the remote epoch root
-        self.remote_roots.push((
-            packet.source_chain_id,
-            packet.epoch,
-            packet.nullifier_root,
-        ));
+        self.remote_roots
+            .push((packet.source_chain_id, packet.epoch, packet.nullifier_root));
 
         Ok(())
     }
 
     /// Check if a nullifier was spent on a remote chain during a specific epoch.
     /// Returns the nullifier root for verification.
-    pub fn get_remote_epoch_root(
-        &self,
-        chain_id: u32,
-        epoch: u64,
-    ) -> Option<&str> {
+    pub fn get_remote_epoch_root(&self, chain_id: u32, epoch: u64) -> Option<&str> {
         self.remote_roots
             .iter()
             .find(|(c, e, _)| *c == chain_id && *e == epoch)

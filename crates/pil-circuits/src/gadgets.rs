@@ -1,9 +1,8 @@
 //! Reusable circuit gadgets: Poseidon chip, range check, Merkle path verification.
 
-use ff::{Field, PrimeField};
+use ff::Field;
 use halo2_proofs::{
-    circuit::{AssignedCell, Layouter, Value},
-    plonk::{Advice, Column, ConstraintSystem, Error, Expression, Selector},
+    plonk::{Advice, Column, ConstraintSystem, Expression, Selector},
     poly::Rotation,
 };
 use pasta_curves::pallas;
@@ -18,10 +17,7 @@ pub struct RangeCheckConfig {
 }
 
 impl RangeCheckConfig {
-    pub fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
-        advice: Column<Advice>,
-    ) -> Self {
+    pub fn configure(meta: &mut ConstraintSystem<pallas::Base>, advice: Column<Advice>) -> Self {
         let selector = meta.selector();
 
         meta.create_gate("range check", |meta| {

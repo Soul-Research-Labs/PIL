@@ -3,9 +3,8 @@
 //! Constructs balanced Cardano transactions for deposit, transfer, and withdraw
 //! operations against the privacy pool validators.
 
-use super::datum::{PoolDatum, NullifierDatum, PlutusData};
-use super::redeemer::PoolRedeemer;
-use super::utxo::{CardanoUtxo, UtxoRef};
+use super::datum::{NullifierDatum, PlutusData, PoolDatum};
+use super::utxo::UtxoRef;
 use serde::{Deserialize, Serialize};
 
 /// Builder for constructing PIL privacy pool transactions on Cardano.
@@ -51,12 +50,7 @@ impl CardanoTxBuilder {
     }
 
     /// Add an output.
-    pub fn add_output(
-        mut self,
-        address: String,
-        lovelace: u64,
-        datum: Option<PlutusData>,
-    ) -> Self {
+    pub fn add_output(mut self, address: String, lovelace: u64, datum: Option<PlutusData>) -> Self {
         self.outputs.push(TxOutput {
             address,
             lovelace,
@@ -102,7 +96,7 @@ impl CardanoTxBuilder {
         deposit_amount: u64,
         commitment: [u8; 32],
         new_pool_datum: PoolDatum,
-        change_address: &str,
+        _change_address: &str,
     ) -> Self {
         let redeemer = super::redeemer::DepositRedeemer {
             commitment,

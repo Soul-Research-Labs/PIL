@@ -13,9 +13,9 @@ pub struct EpochManager {
     /// Finalized epoch roots (epoch_number → nullifier Merkle root).
     finalized_roots: Vec<(u64, Base)>,
     /// Epoch duration in seconds (default: 3600 = 1 hour).
-    epoch_duration_secs: u64,
+    _epoch_duration_secs: u64,
     /// Timestamp of current epoch start.
-    epoch_start: u64,
+    _epoch_start: u64,
 }
 
 impl EpochManager {
@@ -23,8 +23,8 @@ impl EpochManager {
         Self {
             current_epoch: 0,
             finalized_roots: Vec::new(),
-            epoch_duration_secs,
-            epoch_start: 0,
+            _epoch_duration_secs: epoch_duration_secs,
+            _epoch_start: 0,
         }
     }
 

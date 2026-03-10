@@ -46,4 +46,4 @@ pub mod state;
 
 pub use contract::CosmosPrivacyPool;
 pub use ibc::IBCEpochSync;
-pub use msg::{ExecuteMsg, QueryMsg, InstantiateMsg};
+pub use msg::{ExecuteMsg, InstantiateMsg, QueryMsg};

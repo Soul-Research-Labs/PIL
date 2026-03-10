@@ -77,7 +77,10 @@ async fn main() {
     match cli.command {
         Commands::Run { chain } => {
             let chain_domain = parse_chain(&chain);
-            println!("Initializing PIL for {:?} (generating proving keys)...", chain_domain);
+            println!(
+                "Initializing PIL for {:?} (generating proving keys)...",
+                chain_domain
+            );
 
             match Pil::init(chain_domain) {
                 Ok(mut pil) => {
@@ -98,7 +101,7 @@ async fn main() {
                             Ok(0) | Err(_) => break,
                             _ => {}
                         }
-                        let parts: Vec<&str> = line.trim().split_whitespace().collect();
+                        let parts: Vec<&str> = line.split_whitespace().collect();
                         if parts.is_empty() {
                             continue;
                         }
@@ -163,11 +166,19 @@ async fn main() {
                             }
                             "help" => {
                                 println!("Commands:");
-                                println!("  deposit <amount>              - Deposit into shielded pool");
+                                println!(
+                                    "  deposit <amount>              - Deposit into shielded pool"
+                                );
                                 println!("  send <recipient_hex> <amount> - Private transfer");
-                                println!("  withdraw <amount>             - Withdraw to public address");
-                                println!("  balance                       - Show wallet & pool balance");
-                                println!("  history                       - Show transaction history");
+                                println!(
+                                    "  withdraw <amount>             - Withdraw to public address"
+                                );
+                                println!(
+                                    "  balance                       - Show wallet & pool balance"
+                                );
+                                println!(
+                                    "  history                       - Show transaction history"
+                                );
                                 println!("  quit                          - Exit");
                             }
                             "quit" | "exit" => break,
@@ -182,7 +193,10 @@ async fn main() {
             let chain_domain = parse_chain(&chain);
             match Pil::init(chain_domain) {
                 Ok(mut pil) => match pil.deposit(amount) {
-                    Ok(r) => println!("Deposited {amount}. Leaf: {}. Root: {:?}", r.leaf_index, r.root),
+                    Ok(r) => println!(
+                        "Deposited {amount}. Leaf: {}. Root: {:?}",
+                        r.leaf_index, r.root
+                    ),
                     Err(e) => eprintln!("Error: {e}"),
                 },
                 Err(e) => eprintln!("Init error: {e}"),
@@ -219,8 +233,16 @@ async fn main() {
                 eprintln!("Failed to write aiken.toml: {e}");
                 return;
             }
-            println!("Generated Aiken validator ({} bytes) → {}", source.len(), validator_path.display());
-            println!("Generated aiken.toml ({} bytes) → {}", toml.len(), toml_path.display());
+            println!(
+                "Generated Aiken validator ({} bytes) → {}",
+                source.len(),
+                validator_path.display()
+            );
+            println!(
+                "Generated aiken.toml ({} bytes) → {}",
+                toml.len(),
+                toml_path.display()
+            );
         }
         Commands::Keygen => {
             use ff::PrimeField;
@@ -228,8 +250,14 @@ async fn main() {
             let sk = pil_note::keys::SpendingKey::random(&mut rng);
             let owner = sk.owner();
             println!("New spending key generated.");
-            println!("  Spending key (base): {}", hex::encode(sk.to_base().to_repr().as_ref()));
-            println!("  Owner (public):      {}", hex::encode(owner.to_repr().as_ref()));
+            println!(
+                "  Spending key (base): {}",
+                hex::encode(sk.to_base().to_repr().as_ref())
+            );
+            println!(
+                "  Owner (public):      {}",
+                hex::encode(owner.to_repr().as_ref())
+            );
         }
         Commands::Serve { bind } => {
             println!("Starting PIL RPC server on {bind}...");
@@ -241,9 +269,7 @@ async fn main() {
                     return;
                 }
             };
-            let state = std::sync::Arc::new(tokio::sync::RwLock::new(
-                pil_rpc::AppState::new(keys),
-            ));
+            let state = std::sync::Arc::new(tokio::sync::RwLock::new(pil_rpc::AppState::new(keys)));
             let router = pil_rpc::create_router(state);
             let listener = match tokio::net::TcpListener::bind(&bind).await {
                 Ok(l) => l,

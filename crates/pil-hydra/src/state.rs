@@ -121,11 +121,7 @@ mod tests {
         assert_eq!(state.note_count(), 1);
         assert_eq!(state.total_deposited(), 500);
 
-        let nf = pil_note::derive_nullifier_v2(
-            sk.to_base(),
-            note.commitment(),
-            state.domain(),
-        );
+        let nf = pil_note::derive_nullifier_v2(sk.to_base(), note.commitment(), state.domain());
         state.withdraw(&[nf], &[], 500, 0).unwrap();
 
         assert_eq!(state.balance(), 0);
@@ -140,11 +136,7 @@ mod tests {
         let note = Note::new(100, sk.owner(), 0);
         state.deposit(note.commitment(), 100, 0).unwrap();
 
-        let nf = pil_note::derive_nullifier_v2(
-            sk.to_base(),
-            note.commitment(),
-            state.domain(),
-        );
+        let nf = pil_note::derive_nullifier_v2(sk.to_base(), note.commitment(), state.domain());
 
         state.withdraw(&[nf], &[], 100, 0).unwrap();
         assert!(state.withdraw(&[nf], &[], 100, 0).is_err());

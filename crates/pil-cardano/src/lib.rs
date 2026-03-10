@@ -47,7 +47,7 @@ pub mod transaction;
 pub mod utxo;
 pub mod validator;
 
-pub use datum::{PoolDatum, NullifierDatum};
-pub use redeemer::{PoolRedeemer, DepositRedeemer, TransferRedeemer, WithdrawRedeemer};
+pub use datum::{NullifierDatum, PoolDatum};
+pub use redeemer::{DepositRedeemer, PoolRedeemer, TransferRedeemer, WithdrawRedeemer};
 pub use transaction::CardanoTxBuilder;
 pub use validator::CardanoValidatorSpec;

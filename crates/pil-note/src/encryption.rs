@@ -46,8 +46,8 @@ pub fn encrypt_note(
         .map_err(|_| EncryptionError::EcdhFailed)?;
 
     // Encrypt with ChaCha20-Poly1305
-    let cipher = ChaCha20Poly1305::new_from_slice(&key_bytes)
-        .map_err(|_| EncryptionError::EncryptFailed)?;
+    let cipher =
+        ChaCha20Poly1305::new_from_slice(&key_bytes).map_err(|_| EncryptionError::EncryptFailed)?;
     let nonce = Nonce::from([0u8; 12]); // Single-use ephemeral key → zero nonce is safe
     let ciphertext = cipher
         .encrypt(&nonce, plaintext)
@@ -78,8 +78,8 @@ pub fn decrypt_note(
     hk.expand(b"PIL_NoteEncryption", &mut key_bytes)
         .map_err(|_| EncryptionError::EcdhFailed)?;
 
-    let cipher = ChaCha20Poly1305::new_from_slice(&key_bytes)
-        .map_err(|_| EncryptionError::DecryptFailed)?;
+    let cipher =
+        ChaCha20Poly1305::new_from_slice(&key_bytes).map_err(|_| EncryptionError::DecryptFailed)?;
     let nonce = Nonce::from([0u8; 12]);
     let plaintext = cipher
         .decrypt(&nonce, ciphertext)

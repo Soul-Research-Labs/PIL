@@ -116,9 +116,7 @@ async fn health_handler() -> Json<HealthResponse> {
 // GET /status
 // ---------------------------------------------------------------------------
 
-async fn status_handler(
-    State(state): State<Arc<RwLock<AppState>>>,
-) -> Json<StatusResponse> {
+async fn status_handler(State(state): State<Arc<RwLock<AppState>>>) -> Json<StatusResponse> {
     let s = state.read().await;
     let root_bytes = s.pool.root().to_repr();
     Json(StatusResponse {
@@ -274,7 +272,13 @@ async fn withdraw_handler(
     let mut s = state.write().await;
     let receipt = s
         .pool
-        .process_withdraw(&nullifiers, &change_cms, req.exit_value, req.asset_id, &proof_bytes)
+        .process_withdraw(
+            &nullifiers,
+            &change_cms,
+            req.exit_value,
+            req.asset_id,
+            &proof_bytes,
+        )
         .map_err(|e| {
             let msg = e.to_string();
             if msg.contains("already spent") {
@@ -363,7 +367,9 @@ fn parse_field_from_hex(hex_str: &str) -> Result<pil_primitives::types::Base, Ap
     let bytes = hex::decode(hex_str)
         .map_err(|_| AppError::BadRequest(format!("invalid hex: {hex_str}")))?;
     if bytes.len() != 32 {
-        return Err(AppError::BadRequest("field element must be 32 bytes".into()));
+        return Err(AppError::BadRequest(
+            "field element must be 32 bytes".into(),
+        ));
     }
     let mut repr = <pil_primitives::types::Base as PrimeField>::Repr::default();
     repr.as_mut().copy_from_slice(&bytes);
@@ -405,7 +411,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(val["status"], "ok");
     }
@@ -449,14 +457,12 @@ mod tests {
         // Check status reflects deposit
         let app2 = create_router(state);
         let resp2 = app2
-            .oneshot(
-                Request::get("/status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::get("/status").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(resp2.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp2.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let status: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(status["pool_balance"], 100);
         assert_eq!(status["note_count"], 1);
@@ -467,15 +473,13 @@ mod tests {
         let state = test_state();
         let app = create_router(state);
         let resp = app
-            .oneshot(
-                Request::get("/epoch-roots")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::get("/epoch-roots").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(val["current_epoch"], 0);
         assert!(val["epochs"].as_array().unwrap().is_empty());

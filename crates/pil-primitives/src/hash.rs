@@ -7,13 +7,11 @@ use ff::{Field, PrimeField};
 /// In production, use the full-round Poseidon specification with proper
 /// round constants and MDS matrix. This implementation uses a
 /// hardened sponge construction.
-
 const POSEIDON_RATE: usize = 2;
 const POSEIDON_CAPACITY: usize = 1;
 const POSEIDON_WIDTH: usize = POSEIDON_RATE + POSEIDON_CAPACITY;
 const POSEIDON_FULL_ROUNDS: usize = 8;
 const POSEIDON_PARTIAL_ROUNDS: usize = 56;
-const POSEIDON_ALPHA: u64 = 5;
 
 /// Generate round constants deterministically from a seed.
 /// In production, these should be generated from the Poseidon paper's
@@ -65,34 +63,43 @@ fn poseidon_permutation(state: &mut [Base; POSEIDON_WIDTH]) {
 
     // First half of full rounds
     for _ in 0..POSEIDON_FULL_ROUNDS / 2 {
-        for j in 0..POSEIDON_WIDTH {
-            state[j] += constants[rc_idx];
-            rc_idx += 1;
+        for (j, c) in constants[rc_idx..rc_idx + POSEIDON_WIDTH]
+            .iter()
+            .enumerate()
+        {
+            state[j] += c;
         }
-        for j in 0..POSEIDON_WIDTH {
-            state[j] = sbox(state[j]);
+        rc_idx += POSEIDON_WIDTH;
+        for s in state.iter_mut() {
+            *s = sbox(*s);
         }
         mds_multiply(state);
     }
 
     // Partial rounds (S-box on first element only)
     for _ in 0..POSEIDON_PARTIAL_ROUNDS {
-        for j in 0..POSEIDON_WIDTH {
-            state[j] += constants[rc_idx];
-            rc_idx += 1;
+        for (j, c) in constants[rc_idx..rc_idx + POSEIDON_WIDTH]
+            .iter()
+            .enumerate()
+        {
+            state[j] += c;
         }
+        rc_idx += POSEIDON_WIDTH;
         state[0] = sbox(state[0]);
         mds_multiply(state);
     }
 
     // Second half of full rounds
     for _ in 0..POSEIDON_FULL_ROUNDS / 2 {
-        for j in 0..POSEIDON_WIDTH {
-            state[j] += constants[rc_idx];
-            rc_idx += 1;
+        for (j, c) in constants[rc_idx..rc_idx + POSEIDON_WIDTH]
+            .iter()
+            .enumerate()
+        {
+            state[j] += c;
         }
-        for j in 0..POSEIDON_WIDTH {
-            state[j] = sbox(state[j]);
+        rc_idx += POSEIDON_WIDTH;
+        for s in state.iter_mut() {
+            *s = sbox(*s);
         }
         mds_multiply(state);
     }

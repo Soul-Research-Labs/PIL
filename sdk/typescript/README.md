@@ -21,8 +21,8 @@ import {
 
 // 1. Create a client
 const client = new PilClient({
-  prover: new MockProver(),           // replace with real WASM prover
-  ownerPubKey: "abcd...1234",         // 32-byte hex public key
+  prover: new MockProver(), // replace with real WASM prover
+  ownerPubKey: "abcd...1234", // 32-byte hex public key
   defaultChain: ChainDomain.CosmosHub,
   defaultAppId: 0,
 });
@@ -37,7 +37,7 @@ const { proof, nullifiers, outputCommitments } = await client.transfer(
   500_000n,
   "recipient_pub_key_hex",
   "merkle_root_hex",
-  new Map(),   // leaf index → merkle path
+  new Map(), // leaf index → merkle path
 );
 
 // 4. Withdraw
@@ -51,14 +51,14 @@ const result = await client.withdraw(
 
 ## Modules
 
-| Module | Purpose |
-|--------|---------|
-| `PilClient` | High-level orchestrator for deposit → transfer → withdraw |
-| `PilWallet` | In-memory note storage with coin selection |
-| `NoteManager` | Commitment and nullifier derivation (SHA-256) |
-| `CardanoTxBuilder` | Cardano Plutus datum/redeemer CBOR encoding |
-| `CosmosTxBuilder` | CosmWasm execute message construction + gas estimation |
-| `ChainDomain` | Domain separation constants matching Rust `pil-primitives` |
+| Module             | Purpose                                                    |
+| ------------------ | ---------------------------------------------------------- |
+| `PilClient`        | High-level orchestrator for deposit → transfer → withdraw  |
+| `PilWallet`        | In-memory note storage with coin selection                 |
+| `NoteManager`      | Commitment and nullifier derivation (SHA-256)              |
+| `CardanoTxBuilder` | Cardano Plutus datum/redeemer CBOR encoding                |
+| `CosmosTxBuilder`  | CosmWasm execute message construction + gas estimation     |
+| `ChainDomain`      | Domain separation constants matching Rust `pil-primitives` |
 
 ## Chain Builders
 
@@ -71,7 +71,7 @@ const cardano = new CardanoTxBuilder({
   poolScriptAddress: "addr_test1...",
   poolNftPolicyId: "aabb...",
   poolNftAssetName: "504f4f4c",
-  networkId: 0,  // testnet
+  networkId: 0, // testnet
 });
 
 const tx = cardano.buildDeposit(commitment, 2_000_000n, utxos, changeAddr);
@@ -103,7 +103,12 @@ When a `cosmosConfig` is provided to `PilClient`, you can build query messages:
 ```typescript
 const client = new PilClient({
   // ... config
-  cosmosConfig: { contractAddress: "cosmos1...", denom: "uatom", rpcUrl: "...", chainId: "..." },
+  cosmosConfig: {
+    contractAddress: "cosmos1...",
+    denom: "uatom",
+    rpcUrl: "...",
+    chainId: "...",
+  },
 });
 
 const statusQuery = client.getPoolStatusQuery();
@@ -122,7 +127,10 @@ const wallet = new PilWallet();
 wallet.addNote(noteData, leafIndex);
 
 // Coin selection (greedy largest-first)
-const { selected, change } = wallet.selectNotes(500_000n, ChainDomain.CosmosHub);
+const { selected, change } = wallet.selectNotes(
+  500_000n,
+  ChainDomain.CosmosHub,
+);
 
 // Export / import for persistence
 const json = wallet.export();
@@ -148,8 +156,12 @@ Implement the `ProverBackend` interface to plug in a real ZK prover:
 import type { ProverBackend, Proof, ProofRequest } from "@pil/sdk";
 
 class MyWasmProver implements ProverBackend {
-  async prove(request: ProofRequest): Promise<Proof> { /* ... */ }
-  async verify(proof: Proof): Promise<boolean> { /* ... */ }
+  async prove(request: ProofRequest): Promise<Proof> {
+    /* ... */
+  }
+  async verify(proof: Proof): Promise<boolean> {
+    /* ... */
+  }
 }
 ```
 

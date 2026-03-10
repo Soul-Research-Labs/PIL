@@ -11,14 +11,15 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 /// Serialise a Groth16 proof to bytes (compressed, ~192 bytes).
 pub fn proof_to_bytes(proof: &Proof<Bls12_381>) -> Vec<u8> {
     let mut buf = Vec::new();
-    proof.serialize_compressed(&mut buf).expect("proof serialisation");
+    proof
+        .serialize_compressed(&mut buf)
+        .expect("proof serialisation");
     buf
 }
 
 /// Deserialise a Groth16 proof from bytes.
 pub fn proof_from_bytes(bytes: &[u8]) -> Result<Proof<Bls12_381>, SerialiseError> {
-    Proof::deserialize_compressed(bytes)
-        .map_err(|e| SerialiseError::Deserialise(e.to_string()))
+    Proof::deserialize_compressed(bytes).map_err(|e| SerialiseError::Deserialise(e.to_string()))
 }
 
 /// Serialise a verifying key to bytes.
@@ -41,8 +42,7 @@ pub fn proof_to_hex(proof: &Proof<Bls12_381>) -> String {
 
 /// Deserialise proof from hex string.
 pub fn proof_from_hex(hex_str: &str) -> Result<Proof<Bls12_381>, SerialiseError> {
-    let bytes = hex::decode(hex_str)
-        .map_err(|e| SerialiseError::Deserialise(e.to_string()))?;
+    let bytes = hex::decode(hex_str).map_err(|e| SerialiseError::Deserialise(e.to_string()))?;
     proof_from_bytes(&bytes)
 }
 
@@ -66,7 +66,11 @@ mod tests {
 
         // Serialise and deserialise
         let bytes = proof_to_bytes(&wrapper_proof.groth16_proof);
-        assert!(bytes.len() < 256, "Proof should be compact: {} bytes", bytes.len());
+        assert!(
+            bytes.len() < 256,
+            "Proof should be compact: {} bytes",
+            bytes.len()
+        );
 
         let recovered = proof_from_bytes(&bytes).unwrap();
 
