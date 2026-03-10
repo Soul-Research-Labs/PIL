@@ -30,6 +30,7 @@ pub fn instantiate(
         app_id: msg.app_id,
         epoch_duration_secs: msg.epoch_duration_secs,
         ibc_epoch_channel: msg.ibc_epoch_channel,
+        denom: msg.denom,
     };
     CONFIG.save(deps.storage, &config)?;
 
@@ -135,6 +136,15 @@ fn execute_deposit(
         return Err(ContractError::MultipleDenoms {});
     }
     let deposit = &info.funds[0];
+
+    // Validate denom matches configured pool denom
+    let config = CONFIG.load(deps.storage)?;
+    if deposit.denom != config.denom {
+        return Err(ContractError::WrongDenom {
+            expected: config.denom,
+            got: deposit.denom.clone(),
+        });
+    }
 
     // Update state
     let mut state = POOL_STATE.load(deps.storage)?;
@@ -336,12 +346,12 @@ fn execute_withdraw(
     // Validate recipient address
     let recipient_addr = deps.api.addr_validate(&recipient)?;
 
-    // Send withdrawn funds to recipient
-    // In production: determine the denom from the pool config
+    // Send withdrawn funds to recipient using configured denom
+    let config = CONFIG.load(deps.storage)?;
     let send_msg = BankMsg::Send {
         to_address: recipient_addr.to_string(),
         amount: vec![Coin {
-            denom: "uatom".to_string(), // TODO: configurable denom
+            denom: config.denom,
             amount: exit_amount,
         }],
     };
@@ -491,6 +501,7 @@ fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
         app_id: config.app_id,
         epoch_duration_secs: config.epoch_duration_secs,
         ibc_epoch_channel: config.ibc_epoch_channel,
+        denom: config.denom,
     })
 }
 
@@ -508,6 +519,7 @@ mod tests {
             app_id: 1,
             epoch_duration_secs: 3600,
             ibc_epoch_channel: None,
+            denom: "uatom".to_string(),
         };
         let info = message_info(&Addr::unchecked("admin"), &[]);
         instantiate(deps, mock_env(), info, msg).unwrap();

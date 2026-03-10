@@ -10,6 +10,7 @@ pub struct Config {
     pub app_id: u32,
     pub epoch_duration_secs: u64,
     pub ibc_epoch_channel: Option<String>,
+    pub denom: String,
 }
 
 /// Pool runtime state — updated on every operation.

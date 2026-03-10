@@ -36,6 +36,9 @@ pub enum ContractError {
     #[error("multiple denoms sent: deposit supports single denom only")]
     MultipleDenoms {},
 
+    #[error("wrong denom: expected {expected}, got {got}")]
+    WrongDenom { expected: String, got: String },
+
     #[error("epoch mismatch: expected {expected}, got {got}")]
     EpochMismatch { expected: u64, got: u64 },
 }

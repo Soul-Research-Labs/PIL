@@ -365,4 +365,30 @@ mod tests {
         let encrypted = wallet.encrypt(b"correct").unwrap();
         assert!(Wallet::decrypt(&encrypted, b"wrong").is_err());
     }
+
+    #[test]
+    fn truncated_encrypted_data_fails() {
+        let wallet = Wallet::new("test".to_string());
+        let encrypted = wallet.encrypt(b"pass").unwrap();
+        // Truncate to only salt (16 bytes) — missing nonce + ciphertext
+        assert!(Wallet::decrypt(&encrypted[..16], b"pass").is_err());
+        // Completely empty
+        assert!(Wallet::decrypt(&[], b"pass").is_err());
+    }
+
+    #[test]
+    fn corrupted_ciphertext_fails() {
+        let wallet = Wallet::new("test".to_string());
+        let mut encrypted = wallet.encrypt(b"pass").unwrap();
+        // Flip a byte in the ciphertext portion
+        if encrypted.len() > 30 {
+            encrypted[30] ^= 0xFF;
+        }
+        assert!(Wallet::decrypt(&encrypted, b"pass").is_err());
+    }
+
+    #[test]
+    fn invalid_json_in_from_json_fails() {
+        assert!(Wallet::from_json(b"not valid json").is_err());
+    }
 }

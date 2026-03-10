@@ -12,6 +12,8 @@ pub struct InstantiateMsg {
     pub epoch_duration_secs: u64,
     /// Optional IBC channel for epoch root sync.
     pub ibc_epoch_channel: Option<String>,
+    /// Native token denomination for the pool (e.g. "uatom", "uosmo").
+    pub denom: String,
 }
 
 /// Execute messages — state-modifying operations on the privacy pool.
@@ -73,6 +75,7 @@ pub enum ExecuteMsg {
 
 /// Query messages — read-only state queries.
 #[cw_serde]
+#[derive(cosmwasm_schema::QueryResponses)]
 pub enum QueryMsg {
     /// Get pool status.
     #[returns(StatusResponse)]
@@ -118,4 +121,5 @@ pub struct ConfigResponse {
     pub app_id: u32,
     pub epoch_duration_secs: u64,
     pub ibc_epoch_channel: Option<String>,
+    pub denom: String,
 }

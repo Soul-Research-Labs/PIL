@@ -90,10 +90,13 @@ async fn main() {
                     loop {
                         print!("pil> ");
                         use std::io::Write;
-                        std::io::stdout().flush().unwrap();
-                        line.clear();
-                        if stdin.read_line(&mut line).unwrap() == 0 {
+                        if std::io::stdout().flush().is_err() {
                             break;
+                        }
+                        line.clear();
+                        match stdin.read_line(&mut line) {
+                            Ok(0) | Err(_) => break,
+                            _ => {}
                         }
                         let parts: Vec<&str> = line.trim().split_whitespace().collect();
                         if parts.is_empty() {
@@ -242,9 +245,17 @@ async fn main() {
                 pil_rpc::AppState::new(keys),
             ));
             let router = pil_rpc::create_router(state);
-            let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
+            let listener = match tokio::net::TcpListener::bind(&bind).await {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("Failed to bind to {bind}: {e}");
+                    return;
+                }
+            };
             println!("PIL RPC server listening on {bind}");
-            axum::serve(listener, router).await.unwrap();
+            if let Err(e) = axum::serve(listener, router).await {
+                eprintln!("Server error: {e}");
+            }
         }
     }
 }

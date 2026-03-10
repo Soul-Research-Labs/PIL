@@ -47,6 +47,7 @@ pub fn create_router(state: Arc<RwLock<AppState>>) -> Router {
         .allow_headers(Any);
 
     Router::new()
+        .route("/health", get(health_handler))
         .route("/status", get(status_handler))
         .route("/deposit", post(deposit_handler))
         .route("/transfer", post(transfer_handler))
@@ -92,6 +93,23 @@ impl IntoResponse for AppError {
         };
         (status, Json(ErrorBody { error: msg })).into_response()
     }
+}
+
+// ---------------------------------------------------------------------------
+// GET /health
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: String,
+    version: String,
+}
+
+async fn health_handler() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +394,20 @@ mod tests {
     fn test_state() -> Arc<RwLock<AppState>> {
         let keys = Arc::new(ProvingKeys::setup().expect("keygen"));
         Arc::new(RwLock::new(AppState::new(keys)))
+    }
+
+    #[tokio::test]
+    async fn health_returns_ok() {
+        let state = test_state();
+        let app = create_router(state);
+        let resp = app
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(val["status"], "ok");
     }
 
     #[tokio::test]

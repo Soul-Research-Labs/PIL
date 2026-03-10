@@ -92,6 +92,31 @@ impl IBCEpochSync {
             return Err(IBCSyncError::UnknownSourceChain(packet.source_chain_id));
         }
 
+        // Reject duplicate epoch from the same chain
+        let already_received = self
+            .remote_roots
+            .iter()
+            .any(|(c, e, _)| *c == packet.source_chain_id && *e == packet.epoch);
+        if already_received {
+            return Err(IBCSyncError::DuplicateEpoch);
+        }
+
+        // Validate epoch ordering: must be >= latest received for this chain
+        let latest_epoch = self
+            .remote_roots
+            .iter()
+            .filter(|(c, _, _)| *c == packet.source_chain_id)
+            .map(|(_, e, _)| *e)
+            .max();
+        if let Some(latest) = latest_epoch {
+            if packet.epoch < latest {
+                return Err(IBCSyncError::OutOfOrderEpoch {
+                    received: packet.epoch,
+                    latest,
+                });
+            }
+        }
+
         // Store the remote epoch root
         self.remote_roots.push((
             packet.source_chain_id,
@@ -122,6 +147,8 @@ pub enum IBCSyncError {
     UnknownSourceChain(u32),
     #[error("epoch already received")]
     DuplicateEpoch,
+    #[error("out-of-order epoch: received {received}, latest {latest}")]
+    OutOfOrderEpoch { received: u64, latest: u64 },
 }
 
 #[cfg(test)]
@@ -161,5 +188,62 @@ mod tests {
             cumulative_root: "".to_string(),
         };
         assert!(sync.receive_epoch_root(packet).is_err());
+    }
+
+    #[test]
+    fn ibc_rejects_duplicate_epoch() {
+        let mut sync = IBCEpochSync::new(10);
+        sync.register_channel("channel-42".to_string(), 11);
+
+        let packet = EpochSyncPacket {
+            source_chain_id: 11,
+            source_app_id: 0,
+            epoch: 5,
+            nullifier_root: "abc".to_string(),
+            nullifier_count: 1,
+            cumulative_root: "def".to_string(),
+        };
+        sync.receive_epoch_root(packet.clone()).unwrap();
+
+        // Second time should fail
+        let dup = EpochSyncPacket {
+            source_chain_id: 11,
+            source_app_id: 0,
+            epoch: 5,
+            nullifier_root: "xyz".to_string(),
+            nullifier_count: 2,
+            cumulative_root: "ghi".to_string(),
+        };
+        let err = sync.receive_epoch_root(dup).unwrap_err();
+        assert!(err.to_string().contains("already received"));
+    }
+
+    #[test]
+    fn ibc_rejects_out_of_order_epoch() {
+        let mut sync = IBCEpochSync::new(10);
+        sync.register_channel("channel-42".to_string(), 11);
+
+        // Receive epoch 5
+        let p5 = EpochSyncPacket {
+            source_chain_id: 11,
+            source_app_id: 0,
+            epoch: 5,
+            nullifier_root: "root5".to_string(),
+            nullifier_count: 10,
+            cumulative_root: "cum5".to_string(),
+        };
+        sync.receive_epoch_root(p5).unwrap();
+
+        // Try to receive epoch 3 (out of order)
+        let p3 = EpochSyncPacket {
+            source_chain_id: 11,
+            source_app_id: 0,
+            epoch: 3,
+            nullifier_root: "root3".to_string(),
+            nullifier_count: 5,
+            cumulative_root: "cum3".to_string(),
+        };
+        let err = sync.receive_epoch_root(p3).unwrap_err();
+        assert!(err.to_string().contains("out-of-order"));
     }
 }
