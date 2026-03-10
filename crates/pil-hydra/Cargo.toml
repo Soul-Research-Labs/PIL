@@ -18,7 +18,7 @@ thiserror.workspace = true
 tracing.workspace = true
 blake2.workspace = true
 hex.workspace = true
+ff.workspace = true
 
 [dev-dependencies]
 rand.workspace = true
-ff.workspace = true

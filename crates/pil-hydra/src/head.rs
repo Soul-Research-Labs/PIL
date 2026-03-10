@@ -137,6 +137,17 @@ impl HydraHead {
         }
     }
 
+    /// Take a snapshot only if the configured policy says it's time.
+    /// Returns `Ok(Some(snapshot))` when a snapshot was taken, `Ok(None)`
+    /// when the policy says it's not time yet.
+    pub fn try_auto_snapshot(&mut self) -> Result<Option<Snapshot>, HydraError> {
+        if self.should_snapshot() {
+            self.take_snapshot().map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Take a snapshot of the current L2 state for L1 commitment.
     pub fn take_snapshot(&mut self) -> Result<Snapshot, HydraError> {
         if self.state != HydraHeadState::Open {

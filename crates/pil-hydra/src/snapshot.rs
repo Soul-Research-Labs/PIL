@@ -33,6 +33,9 @@ impl Snapshot {
         use blake2::{Blake2b512, Digest};
         let mut hasher = Blake2b512::new();
         hasher.update(self.snapshot_number.to_le_bytes());
+        // Include pool root in the commitment to bind the hash to L2 state
+        let root_bytes: [u8; 32] = self.pool_root.into();
+        hasher.update(root_bytes);
         hasher.update(self.nullifier_count.to_le_bytes());
         hasher.update(self.note_count.to_le_bytes());
         hasher.update(self.l2_tx_count.to_le_bytes());

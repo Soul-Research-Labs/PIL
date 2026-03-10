@@ -37,7 +37,9 @@
 pub mod head;
 pub mod snapshot;
 pub mod state;
+pub mod sync;
 
 pub use head::{HydraHead, HydraHeadConfig, HydraHeadState};
 pub use snapshot::{Snapshot, SnapshotPolicy};
 pub use state::HydraPoolState;
+pub use sync::L1SyncState;
