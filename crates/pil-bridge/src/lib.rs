@@ -71,4 +71,7 @@ pub struct BridgeConfig {
     pub poll_interval_secs: u64,
     /// Chains to relay between.
     pub relay_pairs: Vec<(ChainDomain, ChainDomain)>,
+    /// When true, skip actual HTTP submissions (for testing).
+    #[serde(default)]
+    pub dry_run: bool,
 }

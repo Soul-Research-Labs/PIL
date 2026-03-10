@@ -8,13 +8,16 @@ license.workspace = true
 [dependencies]
 pil-primitives = { path = "../pil-primitives" }
 pil-pool = { path = "../pil-pool" }
-pil-sdk = { path = "../pil-sdk" }
+pil-prover = { path = "../pil-prover" }
 pil-node = { path = "../pil-node" }
+pasta_curves = { workspace = true }
+ff = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+hex = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

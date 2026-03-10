@@ -13,6 +13,21 @@ use pil_cosmos::ibc::{IBCEpochSync, EpochSyncPacket};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Response from the PIL RPC `/status` endpoint.
+#[derive(Debug, serde::Deserialize)]
+struct RpcStatusResponse {
+    current_epoch: Option<u64>,
+}
+
+/// Response from the PIL RPC `/epoch/:id` endpoint.
+#[derive(Debug, serde::Deserialize)]
+struct RpcEpochResponse {
+    epoch: u64,
+    nullifier_root: String,
+    #[serde(default)]
+    proof: String,
+}
+
 /// The bridge relayer service.
 pub struct BridgeRelayer {
     config: BridgeConfig,
@@ -24,6 +39,8 @@ pub struct BridgeRelayer {
     pending_queue: Vec<PendingAttestation>,
     /// Metrics counters.
     metrics: RelayerMetrics,
+    /// HTTP client for RPC calls.
+    http: reqwest::Client,
 }
 
 /// A pending attestation waiting to be submitted.
@@ -56,6 +73,7 @@ impl BridgeRelayer {
             cosmos_sync: HashMap::new(),
             pending_queue: Vec::new(),
             metrics: RelayerMetrics::default(),
+            http: reqwest::Client::new(),
         }
     }
 
@@ -193,10 +211,28 @@ impl BridgeRelayer {
         let endpoint = self.endpoint_for(chain)?;
         tracing::debug!("Fetching latest epoch from {:?} at {}", chain, endpoint);
 
-        // In production: HTTP GET to the chain's PIL RPC endpoint
-        // e.g., GET {endpoint}/pil/v1/epoch/latest
-        // For now, return 0 (no live chain)
-        Ok(0)
+        let url = format!("{endpoint}/pil/v1/status");
+        let resp = self
+            .http
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| BridgeError::ChainError(format!("HTTP GET {url}: {e}")))?;
+
+        if !resp.status().is_success() {
+            return Err(BridgeError::ChainError(format!(
+                "GET {url} returned {}",
+                resp.status()
+            )));
+        }
+
+        let body: RpcStatusResponse = resp
+            .json()
+            .await
+            .map_err(|e| BridgeError::ChainError(format!("parse status: {e}")))?;
+
+        Ok(body.current_epoch.unwrap_or(0))
     }
 
     /// Fetch a specific epoch's attestation from a chain.
@@ -211,19 +247,45 @@ impl BridgeRelayer {
             epoch, chain, endpoint,
         );
 
-        // In production:
-        // For Cardano: fetch from Mithril aggregator or Cardano node
-        // For Cosmos: query CosmWasm contract state
+        let url = format!("{endpoint}/pil/v1/epoch/{epoch}");
+        let resp = self
+            .http
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| BridgeError::ChainError(format!("HTTP GET {url}: {e}")))?;
+
+        if !resp.status().is_success() {
+            return Err(BridgeError::ChainError(format!(
+                "GET {url} returned {}",
+                resp.status()
+            )));
+        }
+
+        let body: RpcEpochResponse = resp
+            .json()
+            .await
+            .map_err(|e| BridgeError::ChainError(format!("parse epoch: {e}")))?;
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
+        let mut nullifier_root = [0u8; 32];
+        if let Ok(bytes) = hex::decode(&body.nullifier_root) {
+            let len = bytes.len().min(32);
+            nullifier_root[..len].copy_from_slice(&bytes[..len]);
+        }
+
+        let proof = hex::decode(&body.proof).unwrap_or_default();
+
         Ok(EpochAttestation {
             source_chain: chain,
-            epoch,
-            nullifier_root: [0u8; 32],
-            proof: Vec::new(),
+            epoch: body.epoch,
+            nullifier_root,
+            proof,
             timestamp: now,
         })
     }
@@ -350,15 +412,7 @@ impl BridgeRelayer {
             destination,
         );
 
-        // In production:
-        // 1. Construct EpochSyncPacket
-        // 2. Build CosmWasm ExecuteMsg::ReceiveEpochRoot
-        // 3. Sign with relayer key
-        // 4. Broadcast via Cosmos RPC
-        // 5. Wait for tx confirmation
-
-        // The IBC packet would contain:
-        let _packet = EpochSyncPacket {
+        let packet = EpochSyncPacket {
             source_chain_id: attestation.source_chain.as_u32(),
             source_app_id: 0,
             epoch: attestation.epoch,
@@ -366,6 +420,37 @@ impl BridgeRelayer {
             nullifier_count: 0,
             cumulative_root: String::new(),
         };
+
+        if self.config.dry_run {
+            tracing::debug!("Dry-run: skipping Cosmos submission for epoch {}", attestation.epoch);
+            return Ok(());
+        }
+
+        // POST the ReceiveEpochRoot message to the Cosmos chain's PIL RPC
+        let endpoint = self.endpoint_for(destination)?;
+        let url = format!("{endpoint}/pil/v1/receive_epoch_root");
+
+        let body = serde_json::json!({
+            "source_chain_id": packet.source_chain_id,
+            "epoch": packet.epoch,
+            "nullifier_root": packet.nullifier_root,
+        });
+
+        let resp = self
+            .http
+            .post(&url)
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| BridgeError::ChainError(format!("POST {url}: {e}")))?;
+
+        if !resp.status().is_success() {
+            return Err(BridgeError::ChainError(format!(
+                "POST {url} returned {}",
+                resp.status()
+            )));
+        }
 
         Ok(())
     }
@@ -381,15 +466,38 @@ impl BridgeRelayer {
             attestation.source_chain,
         );
 
-        // In production:
-        // 1. Build a Cardano transaction with:
-        //    - Reference input: current epoch state UTXO
-        //    - Output: new epoch state UTXO with updated root
-        //    - Metadata: light-client proof bytes
-        //    - Redeemer: epoch root from the source chain
-        // 2. Sign with relayer key
-        // 3. Submit via Cardano node
-        // 4. Wait for confirmation (1-2 blocks)
+        if self.config.dry_run {
+            tracing::debug!("Dry-run: skipping Cardano submission for epoch {}", attestation.epoch);
+            return Ok(());
+        }
+        // Build a Cardano transaction submission request:
+        // 1. Construct epoch datum with the remote chain's root
+        // 2. POST the tx to the Cardano submit endpoint
+        let endpoint = self.endpoint_for(ChainDomain::CardanoMainnet)?;
+        let url = format!("{endpoint}/pil/v1/submit_epoch_root");
+
+        let body = serde_json::json!({
+            "source_chain": attestation.source_chain.as_u32(),
+            "epoch": attestation.epoch,
+            "nullifier_root": hex::encode(attestation.nullifier_root),
+            "proof": hex::encode(&attestation.proof),
+        });
+
+        let resp = self
+            .http
+            .post(&url)
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| BridgeError::ChainError(format!("POST {url}: {e}")))?;
+
+        if !resp.status().is_success() {
+            return Err(BridgeError::ChainError(format!(
+                "POST {url} returned {}",
+                resp.status()
+            )));
+        }
 
         Ok(())
     }
@@ -512,6 +620,7 @@ mod tests {
                 (ChainDomain::CardanoMainnet, ChainDomain::CosmosHub),
                 (ChainDomain::CosmosHub, ChainDomain::CardanoMainnet),
             ],
+            dry_run: true,
         }
     }
 

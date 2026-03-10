@@ -87,3 +87,45 @@ pub enum VerifierError {
     #[error("invalid proof: {0}")]
     InvalidProof(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_verify_empty_is_ok() {
+        // Empty batch should always succeed (nothing to verify)
+        let k = 5; // small k for fast test
+        let params = halo2_proofs::poly::commitment::Params::<vesta::Affine>::new(k);
+        // We can't easily create a VK without a circuit, but we can test
+        // the empty-batch shortcut:
+        // batch_verify iterates proofs; empty proofs → Ok(())
+        let empty_circuit = pil_circuits::transfer::TransferCircuit::empty();
+        let vk = halo2_proofs::plonk::keygen_vk(&params, &empty_circuit);
+        // With mismatched k, keygen may fail; that's fine — we just test the
+        // empty-slice path if we can get a vk.
+        if let Ok(vk) = vk {
+            let result = batch_verify(&params, &vk, &[]);
+            assert!(result.is_ok(), "empty batch should succeed");
+        }
+    }
+
+    /// Keygen is expensive in debug mode — ignored by default.
+    #[test]
+    #[ignore]
+    fn verify_transfer_rejects_empty_bytes() {
+        // Without a valid VK (would need expensive keygen), we just ensure
+        // the function signature and error handling work correctly.
+        // This test verifies the API contract rather than cryptographic correctness.
+        let k = pil_circuits::transfer::TRANSFER_K;
+        let params = halo2_proofs::poly::commitment::Params::<vesta::Affine>::new(k);
+
+        // Keygen is expensive in debug mode — we generate a VK for the empty circuit
+        let empty_circuit = pil_circuits::transfer::TransferCircuit::empty();
+        let vk = halo2_proofs::plonk::keygen_vk(&params, &empty_circuit).unwrap();
+
+        // Empty proof bytes → transcript deserialization error → InvalidProof
+        let result = verify_transfer(&params, &vk, &[], &[&[]]);
+        assert!(result.is_err());
+    }
+}

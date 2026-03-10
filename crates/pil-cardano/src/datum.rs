@@ -83,10 +83,88 @@ pub enum PlutusData {
 }
 
 impl PlutusData {
-    /// Encode to CBOR bytes (simplified — production should use minicbor).
+    /// Encode to CBOR bytes (RFC 7049 / RFC 8949).
+    ///
+    /// Plutus datum CBOR follows the Cardano ledger encoding:
+    /// - Constr: tag(121 + n) for n < 7, else tag(1280 + n), then array of fields
+    /// - Integer: CBOR integer (major type 0/1)
+    /// - Bytes: CBOR byte string (major type 2)
+    /// - List: CBOR array (major type 4)
+    /// - Map: CBOR map (major type 5)
     pub fn to_cbor(&self) -> Vec<u8> {
-        // Placeholder: proper CBOR encoding
-        serde_json::to_vec(self).unwrap_or_default()
+        let mut buf = Vec::new();
+        self.encode_cbor(&mut buf);
+        buf
+    }
+
+    fn encode_cbor(&self, buf: &mut Vec<u8>) {
+        match self {
+            PlutusData::Constr { tag, fields } => {
+                // Plutus uses CBOR tags 121..127 for constructors 0..6,
+                // and 1280+ for constructors >= 7.
+                let cbor_tag = if *tag < 7 { 121 + tag } else { 1280 + tag };
+                Self::encode_tag(buf, cbor_tag);
+                Self::encode_array_header(buf, fields.len());
+                for f in fields {
+                    f.encode_cbor(buf);
+                }
+            }
+            PlutusData::Integer(v) => {
+                if *v >= 0 {
+                    Self::encode_uint(buf, 0, *v as u64);
+                } else {
+                    // CBOR major type 1: negative integer = -1 - n
+                    Self::encode_uint(buf, 1, (-1 - *v) as u64);
+                }
+            }
+            PlutusData::Bytes(bytes) => {
+                Self::encode_uint(buf, 2, bytes.len() as u64);
+                buf.extend_from_slice(bytes);
+            }
+            PlutusData::List(items) => {
+                Self::encode_array_header(buf, items.len());
+                for item in items {
+                    item.encode_cbor(buf);
+                }
+            }
+            PlutusData::Map(entries) => {
+                Self::encode_uint(buf, 5, entries.len() as u64);
+                for (k, v) in entries {
+                    k.encode_cbor(buf);
+                    v.encode_cbor(buf);
+                }
+            }
+        }
+    }
+
+    /// Encode a CBOR unsigned integer with the given major type (0..7).
+    fn encode_uint(buf: &mut Vec<u8>, major: u8, value: u64) {
+        let mt = major << 5;
+        if value < 24 {
+            buf.push(mt | value as u8);
+        } else if value <= 0xFF {
+            buf.push(mt | 24);
+            buf.push(value as u8);
+        } else if value <= 0xFFFF {
+            buf.push(mt | 25);
+            buf.extend_from_slice(&(value as u16).to_be_bytes());
+        } else if value <= 0xFFFF_FFFF {
+            buf.push(mt | 26);
+            buf.extend_from_slice(&(value as u32).to_be_bytes());
+        } else {
+            buf.push(mt | 27);
+            buf.extend_from_slice(&value.to_be_bytes());
+        }
+    }
+
+    /// Encode a CBOR array header (major type 4).
+    fn encode_array_header(buf: &mut Vec<u8>, len: usize) {
+        Self::encode_uint(buf, 4, len as u64);
+    }
+
+    /// Encode a CBOR tag (major type 6).
+    fn encode_tag(buf: &mut Vec<u8>, tag: u64) {
+        Self::encode_uint(buf, 6, tag);
     }
 }
 
@@ -106,5 +184,55 @@ mod tests {
         let plutus = datum.to_plutus_data();
         let cbor = plutus.to_cbor();
         assert!(!cbor.is_empty());
+        // First byte should be CBOR tag 121 (constructor 0): 0xd8 0x79
+        assert_eq!(cbor[0], 0xd8); // tag initial byte
+        assert_eq!(cbor[1], 121);  // tag value for constructor 0
+    }
+
+    #[test]
+    fn cbor_integer_encoding() {
+        let data = PlutusData::Integer(42);
+        let cbor = data.to_cbor();
+        // CBOR: major type 0, value 42 (< 256) → 0x18 0x2a
+        assert_eq!(cbor, vec![0x18, 42]);
+    }
+
+    #[test]
+    fn cbor_small_integer() {
+        let data = PlutusData::Integer(10);
+        let cbor = data.to_cbor();
+        // CBOR: value < 24 → single byte 0x0a
+        assert_eq!(cbor, vec![0x0a]);
+    }
+
+    #[test]
+    fn cbor_negative_integer() {
+        let data = PlutusData::Integer(-1);
+        let cbor = data.to_cbor();
+        // CBOR: major type 1, value 0 → 0x20
+        assert_eq!(cbor, vec![0x20]);
+    }
+
+    #[test]
+    fn cbor_bytes_encoding() {
+        let data = PlutusData::Bytes(vec![0xDE, 0xAD]);
+        let cbor = data.to_cbor();
+        // CBOR: major type 2, length 2, then bytes
+        assert_eq!(cbor, vec![0x42, 0xDE, 0xAD]);
+    }
+
+    #[test]
+    fn nullifier_datum_roundtrip() {
+        let datum = NullifierDatum {
+            nullifier: [0x11; 32],
+            epoch: 3,
+            domain_chain_id: 1,
+            domain_app_id: 0,
+        };
+        let cbor = datum.to_plutus_data().to_cbor();
+        assert!(!cbor.is_empty());
+        // Constructor 1 → tag 122 → 0xd8 0x7a
+        assert_eq!(cbor[0], 0xd8);
+        assert_eq!(cbor[1], 122);
     }
 }

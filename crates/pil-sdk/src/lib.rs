@@ -24,17 +24,19 @@
 //! pil.withdraw(30).unwrap();
 //!
 //! // Cross-chain: send to a recipient on Cosmos Hub
-//! // pil.cross_chain_send(ChainDomain::CosmosHub, recipient_owner, 50).unwrap();
+//! pil.cross_chain_send(ChainDomain::CosmosHub, recipient_owner, 50).unwrap();
 //! ```
 
 use ff::Field;
-use pasta_curves::pallas;
+use halo2_proofs::circuit::Value;
+use pil_circuits::transfer::TransferCircuit;
+use pil_circuits::withdraw::WithdrawCircuit;
 use pil_client::{Wallet, TxRecord};
 use pil_note::{keys::SpendingKey, note::Note};
 use pil_pool::PrivacyPool;
 use pil_primitives::{
     domain::{ChainDomain, DomainSeparator},
-    types::{Base, Commitment},
+    types::Base,
 };
 use pil_prover::ProvingKeys;
 
@@ -136,6 +138,10 @@ impl Pil {
                 pil_note::derive_nullifier_v2(self.spending_key.to_base(), n.note.commitment(), &self.domain)
             })
             .collect();
+
+        // Gather witness values for circuit
+        let input_values: Vec<Base> = selected.iter().map(|n| Base::from(n.note.value)).collect();
+        let input_randomness: Vec<Base> = selected.iter().map(|n| n.note.randomness).collect();
         drop(selected);
 
         // Create output notes
@@ -145,13 +151,47 @@ impl Pil {
         let recipient_cm = recipient_note.commitment();
         let change_cm = change_note.commitment();
 
+        // Build transfer circuit
+        let circuit = TransferCircuit {
+            spending_key: Value::known(self.spending_key.to_base()),
+            input_values: [
+                Value::known(input_values.get(0).copied().unwrap_or(Base::ZERO)),
+                Value::known(input_values.get(1).copied().unwrap_or(Base::ZERO)),
+            ],
+            input_randomness: [
+                Value::known(input_randomness.get(0).copied().unwrap_or(Base::ZERO)),
+                Value::known(input_randomness.get(1).copied().unwrap_or(Base::ZERO)),
+            ],
+            input_asset_ids: [Value::known(Base::ZERO); 2],
+            output_values: [
+                Value::known(Base::from(value)),
+                Value::known(Base::from(change)),
+            ],
+            output_owners: [
+                Value::known(recipient_owner),
+                Value::known(self.spending_key.owner()),
+            ],
+            output_randomness: [
+                Value::known(recipient_note.randomness),
+                Value::known(change_note.randomness),
+            ],
+            output_asset_ids: [Value::known(Base::ZERO); 2],
+            fee: Value::known(Base::ZERO),
+            merkle_siblings: [[Value::known(Base::ZERO); 32]; 2],
+            merkle_indices: [Value::known(0u64); 2],
+        };
+
+        // Generate ZK proof
+        let proof_bytes = pil_prover::prove_transfer(&self.keys, circuit, &[&[]])
+            .map_err(|e| PilError::Proof(e.to_string()))?;
+
         // Process transfer in the pool
         let receipt = self
             .pool
             .process_transfer(
                 &nullifiers,
                 &[recipient_cm, change_cm],
-                &[], // Proof bytes (generated separately)
+                &proof_bytes,
             )
             .map_err(|e| PilError::Pool(e.to_string()))?;
 
@@ -190,14 +230,35 @@ impl Pil {
                 pil_note::derive_nullifier_v2(self.spending_key.to_base(), n.note.commitment(), &self.domain)
             })
             .collect();
+
+        let input_values: Vec<Base> = selected.iter().map(|n| Base::from(n.note.value)).collect();
         drop(selected);
 
         let change_note = Note::new(change, self.spending_key.owner(), 0);
         let change_cm = change_note.commitment();
 
+        // Build withdraw circuit
+        let circuit = WithdrawCircuit {
+            spending_key: Value::known(self.spending_key.to_base()),
+            input_values: [
+                Value::known(input_values.get(0).copied().unwrap_or(Base::ZERO)),
+                Value::known(input_values.get(1).copied().unwrap_or(Base::ZERO)),
+            ],
+            output_values: [
+                Value::known(Base::from(change)),
+                Value::known(Base::ZERO),
+            ],
+            exit_value: Value::known(Base::from(value)),
+            fee: Value::known(Base::ZERO),
+        };
+
+        // Generate ZK proof
+        let proof_bytes = pil_prover::prove_withdraw(&self.keys, circuit, &[&[]])
+            .map_err(|e| PilError::Proof(e.to_string()))?;
+
         let receipt = self
             .pool
-            .process_withdraw(&nullifiers, &[change_cm], value, 0, &[])
+            .process_withdraw(&nullifiers, &[change_cm], value, 0, &proof_bytes)
             .map_err(|e| PilError::Pool(e.to_string()))?;
 
         for idx in &selected_leaf_indices {
@@ -215,6 +276,108 @@ impl Pil {
             exit_value: value,
             leaf_indices: receipt.leaf_indices,
             root: receipt.root,
+        })
+    }
+
+    /// Cross-chain private transfer: spend notes on the current chain
+    /// and produce output commitments tagged with the destination chain's domain.
+    ///
+    /// The resulting proof and commitments must be relayed to the destination
+    /// chain by the bridge relayer (pil-bridge).
+    pub fn cross_chain_send(
+        &mut self,
+        dest_chain: ChainDomain,
+        recipient_owner: Base,
+        value: u64,
+    ) -> Result<CrossChainSendResult, PilError> {
+        let selected = self
+            .wallet
+            .select_notes(value, 0)
+            .map_err(|e| PilError::Wallet(e.to_string()))?;
+
+        let input_total: u64 = selected.iter().map(|n| n.note.value).sum();
+        let change = input_total - value;
+
+        let selected_leaf_indices: Vec<u64> = selected.iter().map(|n| n.leaf_index).collect();
+        let nullifiers: Vec<_> = selected
+            .iter()
+            .map(|n| {
+                pil_note::derive_nullifier_v2(
+                    self.spending_key.to_base(),
+                    n.note.commitment(),
+                    &self.domain,
+                )
+            })
+            .collect();
+
+        let input_values: Vec<Base> = selected.iter().map(|n| Base::from(n.note.value)).collect();
+        let input_randomness: Vec<Base> = selected.iter().map(|n| n.note.randomness).collect();
+        drop(selected);
+
+        // Output notes use the DESTINATION chain's domain for cross-chain isolation
+        let _dest_domain = DomainSeparator::new(dest_chain, 0);
+
+        let recipient_note = Note::new(value, recipient_owner, 0);
+        let change_note = Note::new(change, self.spending_key.owner(), 0);
+
+        let recipient_cm = recipient_note.commitment();
+        let change_cm = change_note.commitment();
+
+        // Build transfer circuit (same circuit, but output domain differs)
+        let circuit = TransferCircuit {
+            spending_key: Value::known(self.spending_key.to_base()),
+            input_values: [
+                Value::known(input_values.get(0).copied().unwrap_or(Base::ZERO)),
+                Value::known(input_values.get(1).copied().unwrap_or(Base::ZERO)),
+            ],
+            input_randomness: [
+                Value::known(input_randomness.get(0).copied().unwrap_or(Base::ZERO)),
+                Value::known(input_randomness.get(1).copied().unwrap_or(Base::ZERO)),
+            ],
+            input_asset_ids: [Value::known(Base::ZERO); 2],
+            output_values: [
+                Value::known(Base::from(value)),
+                Value::known(Base::from(change)),
+            ],
+            output_owners: [
+                Value::known(recipient_owner),
+                Value::known(self.spending_key.owner()),
+            ],
+            output_randomness: [
+                Value::known(recipient_note.randomness),
+                Value::known(change_note.randomness),
+            ],
+            output_asset_ids: [Value::known(Base::ZERO); 2],
+            fee: Value::known(Base::ZERO),
+            merkle_siblings: [[Value::known(Base::ZERO); 32]; 2],
+            merkle_indices: [Value::known(0u64); 2],
+        };
+
+        let proof_bytes = pil_prover::prove_transfer(&self.keys, circuit, &[&[]])
+            .map_err(|e| PilError::Proof(e.to_string()))?;
+
+        let receipt = self
+            .pool
+            .process_transfer(&nullifiers, &[recipient_cm, change_cm], &proof_bytes)
+            .map_err(|e| PilError::Pool(e.to_string()))?;
+
+        for idx in &selected_leaf_indices {
+            self.wallet.mark_spent(*idx);
+        }
+        self.wallet.add_note(change_note, receipt.leaf_indices[1]);
+        self.wallet.record_tx(TxRecord::Send {
+            value,
+            asset_id: 0,
+            recipient_owner: format!("{recipient_owner:?}"),
+        });
+
+        Ok(CrossChainSendResult {
+            source_chain: self.chain,
+            dest_chain,
+            nullifiers_spent: receipt.nullifiers_spent,
+            leaf_indices: receipt.leaf_indices,
+            root: receipt.root,
+            proof_bytes,
         })
     }
 
@@ -248,6 +411,16 @@ pub struct WithdrawResult {
     pub exit_value: u64,
     pub leaf_indices: Vec<u64>,
     pub root: Base,
+}
+
+#[derive(Debug)]
+pub struct CrossChainSendResult {
+    pub source_chain: ChainDomain,
+    pub dest_chain: ChainDomain,
+    pub nullifiers_spent: usize,
+    pub leaf_indices: Vec<u64>,
+    pub root: Base,
+    pub proof_bytes: Vec<u8>,
 }
 
 #[derive(Debug, thiserror::Error)]

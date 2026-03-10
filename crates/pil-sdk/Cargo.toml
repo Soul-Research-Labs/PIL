@@ -17,6 +17,7 @@ pil-client = { path = "../pil-client" }
 pil-cardano = { path = "../pil-cardano" }
 pil-cosmos = { path = "../pil-cosmos" }
 pil-bridge = { path = "../pil-bridge" }
+halo2_proofs = { workspace = true }
 pasta_curves = { workspace = true }
 ff = { workspace = true }
 serde = { workspace = true }

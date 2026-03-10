@@ -10,7 +10,7 @@
 //! which matches our circuit field (pallas::Base).
 
 use halo2_proofs::{
-    plonk::{self, keygen_pk, keygen_vk, create_proof, ProvingKey, VerifyingKey},
+    plonk::{keygen_pk, keygen_vk, create_proof, ProvingKey, VerifyingKey},
     poly::commitment::Params,
     transcript::{Blake2bWrite, Challenge255},
 };
@@ -118,10 +118,68 @@ pub async fn prove_transfer_async(
     .map_err(|e| ProverError::ProofGeneration(format!("async join: {e}")))?
 }
 
+/// Async withdraw proof generation wrapper.
+pub async fn prove_withdraw_async(
+    keys: std::sync::Arc<ProvingKeys>,
+    circuit: WithdrawCircuit,
+    public_inputs: Vec<Vec<pallas::Base>>,
+) -> Result<Vec<u8>, ProverError> {
+    tokio::task::spawn_blocking(move || {
+        let pi_refs: Vec<&[pallas::Base]> = public_inputs.iter().map(|v| v.as_slice()).collect();
+        prove_withdraw(&keys, circuit, &pi_refs)
+    })
+    .await
+    .map_err(|e| ProverError::ProofGeneration(format!("async join: {e}")))?
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProverError {
     #[error("key setup failed: {0}")]
     Setup(String),
     #[error("proof generation failed: {0}")]
     ProofGeneration(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pil_circuits::transfer::TransferCircuit;
+    use pil_circuits::withdraw::WithdrawCircuit;
+
+    /// Proving key setup + proof generation is expensive in debug mode (~30s+).
+    /// These tests are ignored by default but run in release mode CI.
+    #[test]
+    #[ignore]
+    fn proving_keys_setup_succeeds() {
+        let keys = ProvingKeys::setup();
+        assert!(keys.is_ok(), "ProvingKeys::setup() failed: {:?}", keys.err());
+    }
+
+    #[test]
+    #[ignore]
+    fn prove_transfer_produces_bytes() {
+        let keys = ProvingKeys::setup().unwrap();
+        let circuit = TransferCircuit::empty();
+        let result = prove_transfer(&keys, circuit, &[&[]]);
+        assert!(result.is_ok(), "prove_transfer failed: {:?}", result.err());
+        assert!(!result.unwrap().is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn prove_withdraw_produces_bytes() {
+        let keys = ProvingKeys::setup().unwrap();
+        let circuit = WithdrawCircuit::empty();
+        let result = prove_withdraw(&keys, circuit, &[&[]]);
+        assert!(result.is_ok(), "prove_withdraw failed: {:?}", result.err());
+        assert!(!result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn prover_error_display() {
+        let e = ProverError::Setup("test error".into());
+        assert_eq!(format!("{e}"), "key setup failed: test error");
+        let e = ProverError::ProofGeneration("gen fail".into());
+        assert_eq!(format!("{e}"), "proof generation failed: gen fail");
+    }
 }

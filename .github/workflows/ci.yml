@@ -86,7 +86,11 @@ jobs:
       - name: Lint
         run: |
           cd sdk/typescript
-          npm run lint || true
+          npm run lint
+      - name: Test
+        run: |
+          cd sdk/typescript
+          npm test
 
   security:
     name: Security Audit

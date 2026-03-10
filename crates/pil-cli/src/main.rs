@@ -3,6 +3,7 @@
 use clap::{Parser, Subcommand};
 use pil_primitives::domain::ChainDomain;
 use pil_sdk::Pil;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "pil", about = "Privacy Interoperability Layer CLI")]
@@ -34,6 +35,8 @@ enum Commands {
     },
     /// Show supported chains
     Chains,
+    /// Generate a new spending key
+    Keygen,
     /// Generate Aiken validators for Cardano
     GenerateCardanoValidators {
         /// Output directory
@@ -198,18 +201,46 @@ async fn main() {
         Commands::GenerateCardanoValidators { output } => {
             let source = pil_cardano::validator::generate_pool_validator_aiken();
             let toml = pil_cardano::validator::generate_aiken_toml();
-            println!("Generated Aiken validator source ({} bytes)", source.len());
-            println!("Output directory: {output}");
-            // In production: write files to disk
+            let out_dir = PathBuf::from(&output);
+            if let Err(e) = std::fs::create_dir_all(&out_dir) {
+                eprintln!("Failed to create output directory: {e}");
+                return;
+            }
+            let validator_path = out_dir.join("pool_validator.ak");
+            let toml_path = out_dir.join("aiken.toml");
+            if let Err(e) = std::fs::write(&validator_path, &source) {
+                eprintln!("Failed to write validator: {e}");
+                return;
+            }
+            if let Err(e) = std::fs::write(&toml_path, &toml) {
+                eprintln!("Failed to write aiken.toml: {e}");
+                return;
+            }
+            println!("Generated Aiken validator ({} bytes) → {}", source.len(), validator_path.display());
+            println!("Generated aiken.toml ({} bytes) → {}", toml.len(), toml_path.display());
+        }
+        Commands::Keygen => {
+            use ff::PrimeField;
+            let mut rng = rand::thread_rng();
+            let sk = pil_note::keys::SpendingKey::random(&mut rng);
+            let owner = sk.owner();
+            println!("New spending key generated.");
+            println!("  Spending key (base): {}", hex::encode(sk.to_base().to_repr().as_ref()));
+            println!("  Owner (public):      {}", hex::encode(owner.to_repr().as_ref()));
         }
         Commands::Serve { bind } => {
             println!("Starting PIL RPC server on {bind}...");
-            let state = std::sync::Arc::new(tokio::sync::RwLock::new(pil_rpc::AppState {
-                pool_balance: 0,
-                note_count: 0,
-                merkle_root: "0".repeat(64),
-                current_epoch: 0,
-            }));
+            println!("Generating proving keys (this may take a moment)...");
+            let keys = match pil_prover::ProvingKeys::setup() {
+                Ok(k) => std::sync::Arc::new(k),
+                Err(e) => {
+                    eprintln!("Failed to generate proving keys: {e}");
+                    return;
+                }
+            };
+            let state = std::sync::Arc::new(tokio::sync::RwLock::new(
+                pil_rpc::AppState::new(keys),
+            ));
             let router = pil_rpc::create_router(state);
             let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
             println!("PIL RPC server listening on {bind}");

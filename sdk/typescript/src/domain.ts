@@ -1,29 +1,26 @@
 /**
  * Chain domains for cross-chain nullifier isolation.
- * Mirrors the Rust `ChainDomain` enum in pil-primitives.
+ * Values MUST match the Rust `ChainDomain` enum in pil-primitives/src/domain.rs.
  */
 export enum ChainDomain {
-  Cardano = 0,
-  CardanoTestnet = 1,
-  CosmosHub = 2,
-  Osmosis = 3,
-  Neutron = 4,
-  Injective = 5,
-  Sei = 6,
-  Archway = 7,
-  Stargaze = 8,
-  Juno = 9,
-  Secret = 10,
-  Akash = 11,
-  Celestia = 12,
-  Dymension = 13,
-  Noble = 14,
-  Stride = 15,
-  Mars = 16,
-  Kujira = 17,
-  Coreum = 18,
-  Persistence = 19,
-  Migaloo = 20,
+  // Cardano ecosystem
+  CardanoMainnet = 1,
+  CardanoPreprod = 2,
+  CardanoPreview = 3,
+
+  // Cosmos ecosystem (starting at 10)
+  CosmosHub = 10,
+  Osmosis = 11,
+  Neutron = 12,
+  Injective = 13,
+  SecretNetwork = 14,
+  Celestia = 15,
+  Sei = 16,
+  Archway = 17,
+  Dymension = 18,
+  Stargaze = 19,
+  Akash = 20,
+  Juno = 21,
 }
 
 /**
