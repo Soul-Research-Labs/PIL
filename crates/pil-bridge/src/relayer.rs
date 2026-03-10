@@ -77,6 +77,11 @@ impl BridgeRelayer {
         }
     }
 
+    /// Get a reference to the bridge configuration.
+    pub fn config(&self) -> &BridgeConfig {
+        &self.config
+    }
+
     /// Register a Cosmos chain for IBC epoch sync.
     pub fn register_cosmos_chain(
         &mut self,

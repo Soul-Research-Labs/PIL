@@ -13,6 +13,7 @@ pil-pool = { path = "../pil-pool" }
 pil-cosmos = { path = "../pil-cosmos" }
 pil-cardano = { path = "../pil-cardano" }
 pil-bridge = { path = "../pil-bridge" }
+pil-hydra = { path = "../pil-hydra" }
 pasta_curves = { workspace = true }
 ff = { workspace = true }
 rand = { workspace = true }
