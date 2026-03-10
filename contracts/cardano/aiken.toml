@@ -1,0 +1,14 @@
+name = "pil-cardano/privacy-pool"
+version = "0.1.0"
+license = "MIT"
+description = "PIL Privacy Pool validators for Cardano — ZK shielded pool with domain-separated nullifiers"
+
+[repository]
+user = "Soul-Research-Labs"
+project = "PIL"
+platform = "github"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v2"
+source = "github"

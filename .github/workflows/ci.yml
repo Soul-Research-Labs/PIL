@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Check compilation
+        run: cargo check --workspace
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run unit tests
+        run: cargo test --workspace --exclude pil-sdk --exclude pil-groth16-wrapper --exclude pil-benchmarks
+      - name: Run integration tests
+        run: cargo test --package pil-integration-tests
+      - name: Run Hydra tests
+        run: cargo test --package pil-hydra
+      - name: Run SDK e2e test
+        run: cargo test --package pil-sdk -- --test-threads=1
+        timeout-minutes: 15
+      - name: Run Groth16 wrapper tests
+        run: cargo test --package pil-groth16-wrapper -- --test-threads=1
+        timeout-minutes: 10
+
+  cosmwasm:
+    name: CosmWasm Contract
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Build CosmWasm contract
+        run: |
+          cd contracts/cosmwasm
+          cargo build --target wasm32-unknown-unknown --release --lib
+      - name: Run CosmWasm tests
+        run: |
+          cd contracts/cosmwasm
+          cargo test
+
+  typescript-sdk:
+    name: TypeScript SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install dependencies
+        run: |
+          cd sdk/typescript
+          npm install
+      - name: Build
+        run: |
+          cd sdk/typescript
+          npm run build
+      - name: Lint
+        run: |
+          cd sdk/typescript
+          npm run lint || true
+
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      - name: Run audit
+        run: cargo audit
+        continue-on-error: true
+
+  benchmarks:
+    name: Benchmarks (dry run)
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Compile benchmarks
+        run: cargo bench --package pil-benchmarks --no-run

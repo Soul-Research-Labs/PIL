@@ -1,0 +1,19 @@
+[package]
+name = "pil-cosmos"
+description = "Cosmos adapter for PIL — CosmWasm contracts, IBC integration, cross-chain privacy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pil-primitives = { path = "../pil-primitives" }
+pil-pool = { path = "../pil-pool" }
+pil-note = { path = "../pil-note" }
+pil-tree = { path = "../pil-tree" }
+pasta_curves = { workspace = true }
+ff = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

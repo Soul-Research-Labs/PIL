@@ -1,0 +1,35 @@
+{
+  "name": "@pil/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the Privacy Interoperability Layer (PIL) — ZK privacy for Cardano & Cosmos",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "lint": "eslint src/",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "zk",
+    "privacy",
+    "cardano",
+    "cosmos",
+    "halo2"
+  ],
+  "license": "MIT OR Apache-2.0",
+  "dependencies": {
+    "@cosmjs/cosmwasm-stargate": "^0.32.0",
+    "@cosmjs/proto-signing": "^0.32.0",
+    "@cosmjs/stargate": "^0.32.0",
+    "@emurgo/cardano-serialization-lib-nodejs": "^12.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0",
+    "@types/node": "^20.0.0"
+  }
+}

@@ -1,0 +1,18 @@
+[package]
+name = "pil-integration-tests"
+description = "Cross-chain integration tests for PIL"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+pil-primitives = { path = "../pil-primitives" }
+pil-note = { path = "../pil-note" }
+pil-pool = { path = "../pil-pool" }
+pil-cosmos = { path = "../pil-cosmos" }
+pil-cardano = { path = "../pil-cardano" }
+pil-bridge = { path = "../pil-bridge" }
+pasta_curves = { workspace = true }
+ff = { workspace = true }
+rand = { workspace = true }

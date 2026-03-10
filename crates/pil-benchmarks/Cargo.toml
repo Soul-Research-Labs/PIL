@@ -1,0 +1,26 @@
+[package]
+name = "pil-benchmarks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Performance benchmarks for PIL core operations"
+
+[dependencies]
+pil-primitives = { path = "../pil-primitives" }
+pil-note = { path = "../pil-note" }
+pil-tree = { path = "../pil-tree" }
+pil-pool = { path = "../pil-pool" }
+pil-circuits = { path = "../pil-circuits" }
+pil-prover = { path = "../pil-prover" }
+pil-verifier = { path = "../pil-verifier" }
+
+criterion.workspace = true
+rand.workspace = true
+ff.workspace = true
+pasta_curves.workspace = true
+
+[[bench]]
+name = "core_benchmarks"
+harness = false

@@ -1,0 +1,26 @@
+[package]
+name = "pil-sdk"
+description = "High-level PIL orchestrator — unified API for deposit, send, withdraw across chains"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pil-primitives = { path = "../pil-primitives" }
+pil-note = { path = "../pil-note" }
+pil-tree = { path = "../pil-tree" }
+pil-circuits = { path = "../pil-circuits" }
+pil-prover = { path = "../pil-prover" }
+pil-verifier = { path = "../pil-verifier" }
+pil-pool = { path = "../pil-pool" }
+pil-client = { path = "../pil-client" }
+pil-cardano = { path = "../pil-cardano" }
+pil-cosmos = { path = "../pil-cosmos" }
+pil-bridge = { path = "../pil-bridge" }
+pasta_curves = { workspace = true }
+ff = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
