@@ -47,24 +47,6 @@ export interface EpochRootResult {
   root: string;
 }
 
-export interface CosmosPoolConfig {
-  /** Bech32 contract address of the deployed PIL CosmWasm contract. */
-  contractAddress: string;
-  /** Native denom used by the pool (e.g., "uatom", "uosmo"). */
-  denom: string;
-  /** RPC endpoint URL. */
-  rpcUrl: string;
-  /** Chain ID (e.g., "cosmoshub-4", "osmosis-1"). */
-  chainId: string;
-}
-
-/** An unsigned CosmWasm execute message ready to sign. */
-export interface CosmosTxPayload {
-  contractAddress: string;
-  msg: Record<string, unknown>;
-  funds: Coin[];
-}
-
 /**
  * Builds CosmWasm execute messages that interact with the PIL contract
  * defined in contracts/cosmwasm/.

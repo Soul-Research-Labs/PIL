@@ -63,10 +63,14 @@ PIL (Privacy Interoperability Layer) provides ZK-shielded transactions across Ca
 
 **Mitigations**:
 
-- **Light-client proofs**: Cardano→Cosmos uses Mithril multi-signatures (SPO quorum). Cosmos→Cardano uses Tendermint/CometBFT validator signatures.
+- **Light-client proofs**: Cardano→Cosmos uses Mithril multi-signatures (SPO quorum >50%). Cosmos→Cardano uses Tendermint/CometBFT validator signatures (>⅔ quorum).
 - **Epoch root verification**: Destination chains verify the light-client proof before accepting an epoch root.
+- **SHA-256 Merkle root chain hashing**: On-chain epoch roots use `SHA-256(old_root || commitment)` for collision-resistant state binding.
+- **IBC SendPacket**: Cosmos epoch publishing constructs a proper `IbcMsg::SendPacket` with 300-second timeout and `EpochSyncPacketData` binding.
 - **Stale attestation rejection**: Attestations older than 24 hours are rejected.
 - **Duplicate detection**: The relayer tracks relayed epochs and rejects duplicates.
+- **Multi-chain aggregation**: The `EpochAggregator` collects attestations from all source chains and produces a deterministic digest (`SHA-256("PIL-AGG" || epoch || chain_roots)`) before forwarding.
+- **Rate limiting**: Per-chain-pair rate limiting prevents relay spam (configurable via `RateLimiter`).
 
 ### T5: Key Compromise
 
@@ -144,9 +148,10 @@ PIL (Privacy Interoperability Layer) provides ZK-shielded transactions across Ca
 6. **Monitoring**: Deploy real-time monitoring for nullifier set anomalies, epoch root mismatches, and bridge latency.
 7. **Key management**: Use hardware security modules (HSMs) for relayer signing keys.
 8. **Testnet first**: Deploy on Cardano Preprod + Cosmos testnet before mainnet.
+9. **Cross-chain E2E testing**: Run the integration test suite (`cargo test -p pil-integration-tests`) which includes Cardano↔Cosmos relay, bidirectional epoch sync, and cross-chain double-spend prevention.
 
 ## Versioning
 
-- Security model version: 1.0
+- Security model version: 1.1
 - Last updated: 2026-03-10
 - Applies to: PIL v0.1.0

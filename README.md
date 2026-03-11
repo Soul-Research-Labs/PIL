@@ -51,10 +51,13 @@ PIL brings ZK-shielded transfers, nullifier-based double-spend prevention, and c
 | **Incremental Merkle Tree**     | Depth-32 append-only tree with O(log n) proof generation                   |
 | **Stealth Addresses**           | One-time recipient addresses via Diffie-Hellman key exchange               |
 | **Epoch Synchronisation**       | Cross-chain nullifier root publishing via IBC                              |
-| **Cardano Support**             | Aiken validators for eUTXO-model privacy pools                             |
-| **Cosmos Support**              | CosmWasm contract with IBC epoch root sync to 60+ chains                   |
+| **Cardano Support**             | Aiken validators, CBOR tx serialization, eUTXO batching                    |
+| **Cosmos Support**              | CosmWasm contract with IBC SendPacket, SHA-256 Merkle root, full queries   |
 | **Groth16 BLS12-381 Wrapper**   | Re-proves Halo2 outputs into BLS12-381 Groth16 for Cardano on-chain verify |
 | **Hydra L2 Support**            | Cardano Hydra head management for high-throughput private transactions     |
+| **Bridge Aggregator**           | Multi-chain epoch root aggregation with deterministic digest               |
+| **Mithril Light Client**        | SPO quorum verification for trustless Cardano→Cosmos relay                 |
+| **Property-Based Testing**      | Proptest + fuzz targets for core crypto primitives                         |
 | **CI/CD + Docker**              | GitHub Actions (5 jobs) + multi-stage Docker build                         |
 
 ## Project Structure
@@ -120,10 +123,10 @@ cargo build --release
 cargo test
 ```
 
-All **90+ tests** should pass across 18 crates:
+All **130+ tests** should pass across 18 crates:
 
 ```
-test result: ok. 90 passed; 0 failed; 0 ignored
+test result: ok. 130+ passed; 0 failed; 0 ignored
 ```
 
 ### Run the CLI
@@ -258,12 +261,14 @@ All circuits use the **IPA commitment scheme** over the **Pallas/Vesta** curve c
 
 | Phase | Milestone                                                    | Status      |
 | ----- | ------------------------------------------------------------ | ----------- |
-| 1     | Core Rust workspace (15 crates, ZK circuits, tests)          | ✅ Complete |
+| 1     | Core Rust workspace (18 crates, ZK circuits, tests)          | ✅ Complete |
 | 2     | On-chain contracts (Aiken + CosmWasm) + TypeScript SDK       | ✅ Complete |
 | 3     | Groth16 wrapper, IBC relay, CI/CD, Docker, integration tests | ✅ Complete |
 | 4     | Hydra L2 integration + relayer + benchmarks + security model | ✅ Complete |
-| 5     | Production relayer, Mithril light-client proofs              | Planned     |
-| 6     | Audit & mainnet deployment                                   | Planned     |
+| 5     | Mithril light client, CBOR tx, eUTXO batching, Aiken scaffold | ✅ Complete |
+| 6     | IBC SendPacket, SHA-256 Merkle root, full Cosmos queries      | ✅ Complete |
+| 7     | Bridge aggregator, cross-chain E2E tests, TS SDK hardening    | ✅ Complete |
+| 8     | Audit & mainnet deployment                                    | Planned     |
 
 See [ANALYSIS.md](ANALYSIS.md) for the full feasibility study and risk assessment.
 
