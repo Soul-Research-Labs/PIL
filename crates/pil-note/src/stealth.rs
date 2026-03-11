@@ -84,14 +84,14 @@ mod tests {
         let mut rng = rand::thread_rng();
         let sk = SpendingKey::random(&mut rng);
         let owner = sk.owner();
-        let pk = sk.public_key();
+        let vk = sk.viewing_key();
 
-        // Sender creates stealth address
-        let stealth = stealth_send(pk, owner);
+        // Sender creates stealth address using the VIEWING public key
+        // (the viewing key is what the receiver will use to scan)
+        let stealth = stealth_send(vk.public_point(), owner);
 
-        // Recipient scans
-        let detected_owner =
-            stealth_receive(sk.viewing_key().scalar(), owner, stealth.ephemeral_pk);
+        // Recipient scans using viewing key scalar
+        let detected_owner = stealth_receive(vk.scalar(), owner, stealth.ephemeral_pk);
 
         assert_eq!(stealth.one_time_owner, detected_owner);
     }

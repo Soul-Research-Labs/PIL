@@ -481,7 +481,7 @@ fn cardano_to_cosmos_epoch_relay() {
         let mut msg_hasher = Sha256::new();
         msg_hasher.update(b"PIL-EPOCH");
         msg_hasher.update(epoch.to_be_bytes());
-        msg_hasher.update(&nullifier_root);
+        msg_hasher.update(nullifier_root);
         let message: [u8; 32] = msg_hasher.finalize().into();
 
         let now = std::time::SystemTime::now()

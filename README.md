@@ -259,12 +259,12 @@ All circuits use the **IPA commitment scheme** over the **Pallas/Vesta** curve c
 
 ## Roadmap
 
-| Phase | Milestone                                                    | Status      |
-| ----- | ------------------------------------------------------------ | ----------- |
-| 1     | Core Rust workspace (18 crates, ZK circuits, tests)          | ✅ Complete |
-| 2     | On-chain contracts (Aiken + CosmWasm) + TypeScript SDK       | ✅ Complete |
-| 3     | Groth16 wrapper, IBC relay, CI/CD, Docker, integration tests | ✅ Complete |
-| 4     | Hydra L2 integration + relayer + benchmarks + security model | ✅ Complete |
+| Phase | Milestone                                                     | Status      |
+| ----- | ------------------------------------------------------------- | ----------- |
+| 1     | Core Rust workspace (18 crates, ZK circuits, tests)           | ✅ Complete |
+| 2     | On-chain contracts (Aiken + CosmWasm) + TypeScript SDK        | ✅ Complete |
+| 3     | Groth16 wrapper, IBC relay, CI/CD, Docker, integration tests  | ✅ Complete |
+| 4     | Hydra L2 integration + relayer + benchmarks + security model  | ✅ Complete |
 | 5     | Mithril light client, CBOR tx, eUTXO batching, Aiken scaffold | ✅ Complete |
 | 6     | IBC SendPacket, SHA-256 Merkle root, full Cosmos queries      | ✅ Complete |
 | 7     | Bridge aggregator, cross-chain E2E tests, TS SDK hardening    | ✅ Complete |

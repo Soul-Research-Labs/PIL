@@ -55,9 +55,21 @@ impl SpendingKey {
     }
 
     /// Derive the viewing key from this spending key.
+    ///
+    /// Uses Poseidon PRF: `vk_base = Poseidon(sk_base, tag)` where tag
+    /// encodes the domain "viewing". The result is mapped to a scalar
+    /// for curve operations.
     pub fn viewing_key(&self) -> ViewingKey {
         use group::Group;
-        let vk = self.sk; // In production: vk = PRF(sk, "viewing")
+        // PRF-based derivation: hash the spending key with a domain tag
+        let tag = pallas::Base::from(0x7669_6577u64); // "view" as u64
+        let vk_base = pil_primitives::hash::poseidon_hash2(self.to_base(), tag);
+        // Map base field element to scalar via repr bytes
+        let repr = ff::PrimeField::to_repr(&vk_base);
+        let mut scalar_repr = [0u8; 32];
+        scalar_repr.copy_from_slice(repr.as_ref());
+        scalar_repr[31] &= 0x0f; // Ensure it's in the scalar field
+        let vk = pallas::Scalar::from_repr(scalar_repr).unwrap_or(pallas::Scalar::from(1u64));
         let pk = pallas::Point::generator() * vk;
         ViewingKey { vk, pk }
     }

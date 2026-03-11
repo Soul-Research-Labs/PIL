@@ -36,10 +36,7 @@ describe("CardanoTxPayload shape", () => {
       txCborHex: "a100818258200000",
       redeemer: {
         constructor: 0,
-        fields: [
-          { bytes: "aabb" },
-          { int: "2000000" },
-        ],
+        fields: [{ bytes: "aabb" }, { int: "2000000" }],
       },
       datum: {
         constructor: 0,

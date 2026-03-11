@@ -9,6 +9,7 @@ license.workspace = true
 pil-primitives = { path = "../pil-primitives" }
 pil-pool = { path = "../pil-pool" }
 pil-prover = { path = "../pil-prover" }
+pil-verifier = { path = "../pil-verifier" }
 pil-node = { path = "../pil-node" }
 pasta_curves = { workspace = true }
 ff = { workspace = true }

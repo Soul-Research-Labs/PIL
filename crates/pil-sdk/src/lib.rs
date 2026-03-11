@@ -145,6 +145,13 @@ impl Pil {
         // Gather witness values for circuit
         let input_values: Vec<Base> = selected.iter().map(|n| Base::from(n.note.value)).collect();
         let input_randomness: Vec<Base> = selected.iter().map(|n| n.note.randomness).collect();
+
+        // Retrieve real Merkle authentication paths for input notes
+        let merkle_paths: Vec<_> = selected
+            .iter()
+            .map(|n| self.pool.authentication_path(n.leaf_index))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| PilError::Pool(e.to_string()))?;
         drop(selected);
 
         // Create output notes
@@ -153,6 +160,16 @@ impl Pil {
 
         let recipient_cm = recipient_note.commitment();
         let change_cm = change_note.commitment();
+
+        // Build Merkle witness arrays from real paths
+        let mut merkle_siblings = [[Value::known(Base::ZERO); 32]; 2];
+        let mut merkle_indices = [Value::known(0u64); 2];
+        for (i, path) in merkle_paths.iter().enumerate().take(2) {
+            for (level, sibling) in path.siblings.iter().enumerate() {
+                merkle_siblings[i][level] = Value::known(*sibling);
+            }
+            merkle_indices[i] = Value::known(path.leaf_index);
+        }
 
         // Build transfer circuit
         let circuit = TransferCircuit {
@@ -180,8 +197,8 @@ impl Pil {
             ],
             output_asset_ids: [Value::known(Base::ZERO); 2],
             fee: Value::known(Base::ZERO),
-            merkle_siblings: [[Value::known(Base::ZERO); 32]; 2],
-            merkle_indices: [Value::known(0u64); 2],
+            merkle_siblings,
+            merkle_indices,
         };
 
         // Generate ZK proof
@@ -310,16 +327,37 @@ impl Pil {
 
         let input_values: Vec<Base> = selected.iter().map(|n| Base::from(n.note.value)).collect();
         let input_randomness: Vec<Base> = selected.iter().map(|n| n.note.randomness).collect();
+
+        // Retrieve real Merkle authentication paths for input notes
+        let merkle_paths: Vec<_> = selected
+            .iter()
+            .map(|n| self.pool.authentication_path(n.leaf_index))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| PilError::Pool(e.to_string()))?;
         drop(selected);
 
         // Output notes use the DESTINATION chain's domain for cross-chain isolation
-        let _dest_domain = DomainSeparator::new(dest_chain, 0);
+        let dest_domain = DomainSeparator::new(dest_chain, 0);
 
         let recipient_note = Note::new(value, recipient_owner, 0);
         let change_note = Note::new(change, self.spending_key.owner(), 0);
 
         let recipient_cm = recipient_note.commitment();
         let change_cm = change_note.commitment();
+
+        // Build Merkle witness arrays from real paths
+        let mut merkle_siblings = [[Value::known(Base::ZERO); 32]; 2];
+        let mut merkle_indices = [Value::known(0u64); 2];
+        for (i, path) in merkle_paths.iter().enumerate().take(2) {
+            for (level, sibling) in path.siblings.iter().enumerate() {
+                merkle_siblings[i][level] = Value::known(*sibling);
+            }
+            merkle_indices[i] = Value::known(path.leaf_index);
+        }
+
+        // Embed destination domain tag in the circuit's output asset IDs
+        // This ensures the proof binds to the destination chain
+        let dest_tag = dest_domain.to_domain_tag();
 
         // Build transfer circuit (same circuit, but output domain differs)
         let circuit = TransferCircuit {
@@ -345,10 +383,10 @@ impl Pil {
                 Value::known(recipient_note.randomness),
                 Value::known(change_note.randomness),
             ],
-            output_asset_ids: [Value::known(Base::ZERO); 2],
+            output_asset_ids: [Value::known(dest_tag), Value::known(Base::ZERO)],
             fee: Value::known(Base::ZERO),
-            merkle_siblings: [[Value::known(Base::ZERO); 32]; 2],
-            merkle_indices: [Value::known(0u64); 2],
+            merkle_siblings,
+            merkle_indices,
         };
 
         let proof_bytes = pil_prover::prove_transfer(&self.keys, circuit, &[&[]])

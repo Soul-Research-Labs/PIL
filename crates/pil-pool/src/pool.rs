@@ -166,6 +166,14 @@ impl PrivacyPool {
     pub fn is_nullifier_spent(&self, nf: &Nullifier) -> bool {
         self.nullifiers.contains(nf)
     }
+
+    /// Generate a Merkle authentication path for a given leaf index.
+    /// Returns the sibling hashes needed to prove membership.
+    pub fn authentication_path(&self, leaf_idx: u64) -> Result<pil_tree::MerklePath, PoolError> {
+        self.tree
+            .authentication_path(leaf_idx)
+            .map_err(|e| PoolError::TreeError(e.to_string()))
+    }
 }
 
 impl Default for PrivacyPool {

@@ -2,10 +2,11 @@ use pil_primitives::types::Nullifier;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-/// Nullifier set with constant-time membership checks.
+/// Nullifier set for double-spend prevention.
 ///
-/// Prevents double-spend by tracking which notes have been consumed.
-/// Uses subtle's constant-time comparison to prevent timing side-channels.
+/// Tracks which notes have been consumed using a `HashSet` for O(1) lookup.
+/// Note: membership checks are NOT constant-time; timing side-channels are
+/// acceptable here because nullifier values are already public once spent.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NullifierSet {
     /// Internal storage (HashSet for O(1) lookup after ct_eq check).

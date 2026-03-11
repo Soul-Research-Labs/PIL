@@ -7,7 +7,7 @@
 //! - Epoch finalization
 
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -52,6 +52,7 @@ pub fn create_router(state: Arc<RwLock<AppState>>) -> Router {
         .route("/deposit", post(deposit_handler))
         .route("/transfer", post(transfer_handler))
         .route("/withdraw", post(withdraw_handler))
+        .route("/nullifier-check", get(nullifier_check_handler))
         .route("/epoch-roots", get(epoch_roots_handler))
         .route("/finalize-epoch", post(finalize_epoch_handler))
         .layer(cors)
@@ -214,6 +215,21 @@ async fn transfer_handler(
     let proof_bytes = hex::decode(&req.proof_bytes)
         .map_err(|_| AppError::BadRequest("invalid hex in proof_bytes".into()))?;
 
+    // Verify ZK proof before mutating pool state
+    {
+        let s = state.read().await;
+        let public_inputs = build_transfer_public_inputs(&nullifiers, &commitments, s.pool.root());
+        let pi_refs: Vec<&[pil_primitives::types::Base]> =
+            public_inputs.iter().map(|v| v.as_slice()).collect();
+        pil_verifier::verify_transfer(
+            &s.proving_keys.params_transfer,
+            &s.proving_keys.transfer_vk,
+            &proof_bytes,
+            &pi_refs,
+        )
+        .map_err(|e| AppError::BadRequest(format!("proof verification failed: {e}")))?;
+    }
+
     let mut s = state.write().await;
     let receipt = s
         .pool
@@ -268,6 +284,22 @@ async fn withdraw_handler(
         .collect::<Result<Vec<_>, _>>()?;
     let proof_bytes = hex::decode(&req.proof_bytes)
         .map_err(|_| AppError::BadRequest("invalid hex in proof_bytes".into()))?;
+
+    // Verify ZK proof before mutating pool state
+    {
+        let s = state.read().await;
+        let public_inputs =
+            build_withdraw_public_inputs(&nullifiers, &change_cms, s.pool.root(), req.exit_value);
+        let pi_refs: Vec<&[pil_primitives::types::Base]> =
+            public_inputs.iter().map(|v| v.as_slice()).collect();
+        pil_verifier::verify_withdraw(
+            &s.proving_keys.params_withdraw,
+            &s.proving_keys.withdraw_vk,
+            &proof_bytes,
+            &pi_refs,
+        )
+        .map_err(|e| AppError::BadRequest(format!("proof verification failed: {e}")))?;
+    }
 
     let mut s = state.write().await;
     let receipt = s
@@ -386,6 +418,74 @@ fn parse_nullifier(hex_str: &str) -> Result<Nullifier, AppError> {
 }
 
 // ---------------------------------------------------------------------------
+// GET /nullifier-check?nullifier=<hex>
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct NullifierCheckQuery {
+    nullifier: String,
+}
+
+#[derive(Serialize)]
+struct NullifierCheckResponse {
+    nullifier: String,
+    spent: bool,
+}
+
+async fn nullifier_check_handler(
+    State(state): State<Arc<RwLock<AppState>>>,
+    Query(query): Query<NullifierCheckQuery>,
+) -> Result<Json<NullifierCheckResponse>, AppError> {
+    let nf = parse_nullifier(&query.nullifier)?;
+    let s = state.read().await;
+    let spent = s.pool.is_nullifier_spent(&nf);
+    Ok(Json(NullifierCheckResponse {
+        nullifier: query.nullifier,
+        spent,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Public input builders for proof verification
+// ---------------------------------------------------------------------------
+
+/// Build public inputs for transfer proof verification.
+/// Format: [merkle_root, nullifier_0, nullifier_1, ..., commitment_0, commitment_1, ...]
+fn build_transfer_public_inputs(
+    nullifiers: &[Nullifier],
+    commitments: &[Commitment],
+    merkle_root: pil_primitives::types::Base,
+) -> Vec<Vec<pil_primitives::types::Base>> {
+    let mut pi = vec![merkle_root];
+    for nf in nullifiers {
+        pi.push(nf.0);
+    }
+    for cm in commitments {
+        pi.push(cm.0);
+    }
+    vec![pi]
+}
+
+/// Build public inputs for withdraw proof verification.
+/// Format: [merkle_root, nullifier_0, ..., commitment_0, ..., exit_value]
+fn build_withdraw_public_inputs(
+    nullifiers: &[Nullifier],
+    change_commitments: &[Commitment],
+    merkle_root: pil_primitives::types::Base,
+    exit_value: u64,
+) -> Vec<Vec<pil_primitives::types::Base>> {
+    let mut pi = vec![merkle_root];
+    for nf in nullifiers {
+        pi.push(nf.0);
+    }
+    for cm in change_commitments {
+        pi.push(cm.0);
+    }
+    pi.push(pil_primitives::types::Base::from(exit_value));
+    vec![pi]
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -395,11 +495,18 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use ff::PrimeField;
+    use std::sync::OnceLock;
     use tower::util::ServiceExt;
 
+    /// Shared proving keys — generated once across all tests.
+    fn shared_proving_keys() -> Arc<ProvingKeys> {
+        static KEYS: OnceLock<Arc<ProvingKeys>> = OnceLock::new();
+        KEYS.get_or_init(|| Arc::new(ProvingKeys::setup().expect("keygen")))
+            .clone()
+    }
+
     fn test_state() -> Arc<RwLock<AppState>> {
-        let keys = Arc::new(ProvingKeys::setup().expect("keygen"));
-        Arc::new(RwLock::new(AppState::new(keys)))
+        Arc::new(RwLock::new(AppState::new(shared_proving_keys())))
     }
 
     #[tokio::test]
@@ -483,5 +590,184 @@ mod tests {
         let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(val["current_epoch"], 0);
         assert!(val["epochs"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn nullifier_check_unspent() {
+        let state = test_state();
+        let app = create_router(state);
+
+        let nf = pil_primitives::types::Base::from(99u64);
+        let nf_hex = hex::encode(nf.to_repr().as_ref());
+
+        let resp = app
+            .oneshot(
+                Request::get(format!("/nullifier-check?nullifier={nf_hex}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(val["spent"], false);
+    }
+
+    #[tokio::test]
+    async fn nullifier_check_invalid_hex() {
+        let state = test_state();
+        let app = create_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::get("/nullifier-check?nullifier=not_hex")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn transfer_rejects_invalid_proof() {
+        let state = test_state();
+
+        // First deposit so the pool has balance
+        {
+            let mut s = state.write().await;
+            let cm = Commitment(pil_primitives::types::Base::from(1u64));
+            s.pool.deposit(cm, 100, 0).unwrap();
+        }
+
+        let app = create_router(state);
+
+        let nf = pil_primitives::types::Base::from(42u64);
+        let nf_hex = hex::encode(nf.to_repr().as_ref());
+        let cm = pil_primitives::types::Base::from(2u64);
+        let cm_hex = hex::encode(cm.to_repr().as_ref());
+
+        let body = serde_json::json!({
+            "proof_bytes": hex::encode(vec![0u8; 64]),
+            "nullifiers": [nf_hex],
+            "output_commitments": [cm_hex]
+        });
+
+        let resp = app
+            .oneshot(
+                Request::post("/transfer")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Should fail proof verification
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn withdraw_rejects_invalid_proof() {
+        let state = test_state();
+
+        // Deposit first
+        {
+            let mut s = state.write().await;
+            let cm = Commitment(pil_primitives::types::Base::from(1u64));
+            s.pool.deposit(cm, 100, 0).unwrap();
+        }
+
+        let app = create_router(state);
+
+        let nf = pil_primitives::types::Base::from(42u64);
+        let nf_hex = hex::encode(nf.to_repr().as_ref());
+        let change_cm = pil_primitives::types::Base::from(2u64);
+        let change_hex = hex::encode(change_cm.to_repr().as_ref());
+
+        let body = serde_json::json!({
+            "proof_bytes": hex::encode(vec![0u8; 64]),
+            "nullifiers": [nf_hex],
+            "change_commitments": [change_hex],
+            "exit_value": 50
+        });
+
+        let resp = app
+            .oneshot(
+                Request::post("/withdraw")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Should fail proof verification
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn finalize_epoch_advances() {
+        let state = test_state();
+
+        // Deposit to set a non-trivial root
+        {
+            let mut s = state.write().await;
+            let cm = Commitment(pil_primitives::types::Base::from(1u64));
+            s.pool.deposit(cm, 100, 0).unwrap();
+        }
+
+        let app = create_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post("/finalize-epoch")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(val["finalized_epoch"], 0);
+        assert_eq!(val["new_epoch"], 1);
+
+        // Verify epoch roots now has one entry
+        let app2 = create_router(state);
+        let resp2 = app2
+            .oneshot(Request::get("/epoch-roots").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let bytes2 = axum::body::to_bytes(resp2.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val2: serde_json::Value = serde_json::from_slice(&bytes2).unwrap();
+        assert_eq!(val2["current_epoch"], 1);
+        assert_eq!(val2["epochs"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn deposit_invalid_hex_returns_400() {
+        let state = test_state();
+        let app = create_router(state);
+
+        let body = serde_json::json!({
+            "commitment": "not_valid_hex",
+            "amount": 100
+        });
+
+        let resp = app
+            .oneshot(
+                Request::post("/deposit")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
