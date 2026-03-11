@@ -15,6 +15,7 @@ pil-sdk = { path = "../pil-sdk" }
 pil-rpc = { path = "../pil-rpc" }
 pil-prover = { path = "../pil-prover" }
 pil-cardano = { path = "../pil-cardano" }
+pil-client = { path = "../pil-client" }
 pil-note = { path = "../pil-note" }
 pasta_curves = { workspace = true }
 ff = { workspace = true }
