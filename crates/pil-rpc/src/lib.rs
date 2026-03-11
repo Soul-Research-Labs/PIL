@@ -4,11 +4,11 @@
 //! - Pool status
 //! - Deposit, transfer, withdraw
 //! - Epoch root queries
-//! - Epoch finalization
+//! - Epoch finalization (admin-only, requires API key)
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
@@ -27,6 +27,9 @@ pub struct AppState {
     pub pool: PrivacyPool,
     pub epoch_manager: EpochManager,
     pub proving_keys: Arc<ProvingKeys>,
+    /// Optional API key for admin endpoints (finalize-epoch).
+    /// If None, admin endpoints are open (for testing).
+    pub admin_api_key: Option<String>,
 }
 
 impl AppState {
@@ -35,6 +38,17 @@ impl AppState {
             pool: PrivacyPool::new(),
             epoch_manager: EpochManager::new(3600),
             proving_keys,
+            admin_api_key: None,
+        }
+    }
+
+    /// Create with an admin API key for protected endpoints.
+    pub fn with_api_key(proving_keys: Arc<ProvingKeys>, api_key: String) -> Self {
+        Self {
+            pool: PrivacyPool::new(),
+            epoch_manager: EpochManager::new(3600),
+            proving_keys,
+            admin_api_key: Some(api_key),
         }
     }
 }
@@ -81,6 +95,7 @@ struct ErrorBody {
 
 enum AppError {
     BadRequest(String),
+    Unauthorized(String),
     Conflict(String),
     Internal(String),
 }
@@ -89,6 +104,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let (status, msg) = match self {
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            AppError::Unauthorized(m) => (StatusCode::UNAUTHORIZED, m),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m),
             AppError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         };
@@ -380,15 +396,30 @@ struct FinalizeEpochResponse {
 
 async fn finalize_epoch_handler(
     State(state): State<Arc<RwLock<AppState>>>,
-) -> Json<FinalizeEpochResponse> {
+    headers: HeaderMap,
+) -> Result<Json<FinalizeEpochResponse>, AppError> {
+    // Check API key if configured
+    {
+        let s = state.read().await;
+        if let Some(ref expected) = s.admin_api_key {
+            let provided = headers
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if provided != expected {
+                return Err(AppError::Unauthorized("invalid or missing API key".into()));
+            }
+        }
+    }
+
     let mut s = state.write().await;
     let old_epoch = s.epoch_manager.current_epoch();
     let root = s.pool.root();
     s.epoch_manager.finalize_epoch(root);
-    Json(FinalizeEpochResponse {
+    Ok(Json(FinalizeEpochResponse {
         finalized_epoch: old_epoch,
         new_epoch: s.epoch_manager.current_epoch(),
-    })
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -769,5 +800,134 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    fn test_state_with_api_key(key: &str) -> Arc<RwLock<AppState>> {
+        Arc::new(RwLock::new(AppState::with_api_key(
+            shared_proving_keys(),
+            key.to_string(),
+        )))
+    }
+
+    #[tokio::test]
+    async fn finalize_epoch_rejects_without_api_key() {
+        let state = test_state_with_api_key("secret-admin-key");
+        let app = create_router(state);
+        let resp = app
+            .oneshot(
+                Request::post("/finalize-epoch")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn finalize_epoch_rejects_wrong_api_key() {
+        let state = test_state_with_api_key("secret-admin-key");
+        let app = create_router(state);
+        let resp = app
+            .oneshot(
+                Request::post("/finalize-epoch")
+                    .header("x-api-key", "wrong-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn finalize_epoch_accepts_correct_api_key() {
+        let state = test_state_with_api_key("secret-admin-key");
+        let app = create_router(state);
+        let resp = app
+            .oneshot(
+                Request::post("/finalize-epoch")
+                    .header("x-api-key", "secret-admin-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn finalize_epoch_open_without_key_configured() {
+        let state = test_state();
+        let app = create_router(state);
+        let resp = app
+            .oneshot(
+                Request::post("/finalize-epoch")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn multiple_deposits_increment_note_count() {
+        let state = test_state();
+
+        for i in 0u64..3 {
+            let app = create_router(state.clone());
+            let cm_field = pil_primitives::types::Base::from(100 + i);
+            let cm_hex = hex::encode(cm_field.to_repr().as_ref());
+            let body = serde_json::json!({ "commitment": cm_hex, "amount": 50 });
+            let resp = app
+                .oneshot(
+                    Request::post("/deposit")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        let app = create_router(state);
+        let resp = app
+            .oneshot(Request::get("/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(val["note_count"], 3);
+        assert_eq!(val["pool_balance"], 150);
+    }
+
+    #[tokio::test]
+    async fn epoch_roots_after_multiple_finalizations() {
+        let state = test_state();
+
+        {
+            let mut s = state.write().await;
+            let cm = Commitment(pil_primitives::types::Base::from(1u64));
+            s.pool.deposit(cm, 100, 0).unwrap();
+            let root = s.pool.root();
+            s.epoch_manager.finalize_epoch(root);
+            s.epoch_manager.finalize_epoch(root);
+        }
+
+        let app = create_router(state);
+        let resp = app
+            .oneshot(Request::get("/epoch-roots").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(val["current_epoch"], 2);
+        assert_eq!(val["epochs"].as_array().unwrap().len(), 2);
     }
 }
