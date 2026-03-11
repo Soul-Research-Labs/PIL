@@ -36,8 +36,10 @@
 //!          └─────────────────────────────┘
 //! ```
 
+pub mod aggregator;
 pub mod relayer;
 
+pub use aggregator::{EpochAggregator, EpochSummary, RelayHealth};
 pub use relayer::BridgeRelayer;
 
 use pil_primitives::domain::ChainDomain;

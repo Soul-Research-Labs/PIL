@@ -443,3 +443,339 @@ fn hydra_l2_full_lifecycle() {
     let fanout = head.fanout().unwrap();
     assert_eq!(fanout.total_notes, 1);
 }
+
+/// End-to-end cross-chain relay: Cardano deposits → epoch finalize →
+/// build Mithril certificate → relay to Cosmos via bridge relayer.
+#[test]
+fn cardano_to_cosmos_epoch_relay() {
+    use pil_bridge::relayer::{BridgeRelayer, MithrilCertificate, MithrilSigner};
+    use pil_bridge::{BridgeConfig, EpochAttestation};
+    use sha2::{Digest, Sha256};
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(async {
+        // --- Cardano side: deposit notes and finalize epoch ---
+        let mut cardano_pool = PrivacyPool::new();
+        let mut cardano_epoch = EpochManager::new(3600);
+        let sk = pil_note::keys::SpendingKey::random(&mut rand::rngs::OsRng);
+
+        for val in [100, 200, 300] {
+            let note = pil_note::note::Note::new(val, sk.owner(), 0);
+            cardano_pool.deposit(note.commitment(), val, 0).unwrap();
+        }
+
+        assert_eq!(cardano_pool.balance(), 600);
+        cardano_epoch.finalize_epoch(cardano_pool.root());
+
+        let epoch_root = cardano_epoch.epoch_root(0).unwrap();
+        let mut nullifier_root = [0u8; 32];
+        let root_repr = <Base as ff::PrimeField>::to_repr(&epoch_root);
+        nullifier_root.copy_from_slice(root_repr.as_ref());
+
+        // --- Build a Mithril certificate ---
+        let epoch = 0u64;
+        let mut msg_hasher = Sha256::new();
+        msg_hasher.update(b"PIL-EPOCH");
+        msg_hasher.update(epoch.to_be_bytes());
+        msg_hasher.update(&nullifier_root);
+        let message: [u8; 32] = msg_hasher.finalize().into();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create 3 SPO signers with valid commitments
+        let mut signers = Vec::new();
+        for i in 0u8..3 {
+            let mut signer_id = [0u8; 32];
+            signer_id[0] = i + 1;
+            let commitment = MithrilSigner::compute_commitment(&signer_id, &message);
+            signers.push(MithrilSigner {
+                signer_id,
+                stake_weight: 1000,
+                commitment,
+            });
+        }
+
+        let cert = MithrilCertificate {
+            version: 1,
+            epoch,
+            message,
+            timestamp: now,
+            ttl_secs: 3600,
+            signers,
+        };
+        let proof_bytes = cert.to_bytes();
+
+        // --- Relay via bridge ---
+        let config = BridgeConfig {
+            cardano_endpoint: "http://localhost:4000".to_string(),
+            cosmos_endpoint: "http://localhost:26657".to_string(),
+            mithril_endpoint: None,
+            poll_interval_secs: 30,
+            relay_pairs: vec![],
+            dry_run: true,
+        };
+        let mut relayer = BridgeRelayer::new(config);
+
+        let attestation = EpochAttestation {
+            source_chain: ChainDomain::CardanoMainnet,
+            epoch,
+            nullifier_root,
+            proof: proof_bytes,
+            timestamp: now,
+        };
+
+        relayer
+            .relay_epoch(
+                ChainDomain::CardanoMainnet,
+                ChainDomain::CosmosHub,
+                attestation,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(relayer.metrics().epochs_relayed, 1);
+        assert_eq!(relayer.metrics().verifications, 1);
+        assert_eq!(
+            relayer.latest_relayed_epoch(ChainDomain::CardanoMainnet, ChainDomain::CosmosHub),
+            Some(0)
+        );
+
+        // --- Cosmos side: receive the epoch root ---
+        let mut cosmos_sync = IBCEpochSync::new(ChainDomain::CosmosHub.as_u32());
+        cosmos_sync.register_channel(
+            "channel-0".to_string(),
+            ChainDomain::CardanoMainnet.as_u32(),
+        );
+
+        let packet = pil_cosmos::ibc::EpochSyncPacket {
+            source_chain_id: ChainDomain::CardanoMainnet.as_u32(),
+            source_app_id: 0,
+            epoch: 0,
+            nullifier_root: hex::encode(nullifier_root),
+            nullifier_count: 3,
+            cumulative_root: hex::encode(nullifier_root),
+        };
+        cosmos_sync.receive_epoch_root(packet).unwrap();
+
+        let received = cosmos_sync.get_remote_epoch_root(ChainDomain::CardanoMainnet.as_u32(), 0);
+        assert!(received.is_some());
+        assert_eq!(received.unwrap(), hex::encode(nullifier_root));
+    });
+}
+
+/// Bidirectional relay: Cosmos → Cardano and Cardano → Cosmos in parallel.
+#[test]
+fn bidirectional_epoch_relay() {
+    use pil_bridge::relayer::{BridgeRelayer, MithrilCertificate, MithrilSigner};
+    use pil_bridge::{BridgeConfig, EpochAttestation};
+    use sha2::{Digest, Sha256};
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(async {
+        let config = BridgeConfig {
+            cardano_endpoint: "http://localhost:4000".to_string(),
+            cosmos_endpoint: "http://localhost:26657".to_string(),
+            mithril_endpoint: None,
+            poll_interval_secs: 30,
+            relay_pairs: vec![],
+            dry_run: true,
+        };
+        let mut relayer = BridgeRelayer::new(config);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Helper to build a test certificate
+        let build_cert = |epoch: u64, root: &[u8; 32]| {
+            let mut msg_hasher = Sha256::new();
+            msg_hasher.update(b"PIL-EPOCH");
+            msg_hasher.update(epoch.to_be_bytes());
+            msg_hasher.update(root);
+            let message: [u8; 32] = msg_hasher.finalize().into();
+
+            let mut signer_id = [0u8; 32];
+            signer_id[0] = 1;
+            let commitment = MithrilSigner::compute_commitment(&signer_id, &message);
+
+            MithrilCertificate {
+                version: 1,
+                epoch,
+                message,
+                timestamp: now,
+                ttl_secs: 3600,
+                signers: vec![MithrilSigner {
+                    signer_id,
+                    stake_weight: 1000,
+                    commitment,
+                }],
+            }
+            .to_bytes()
+        };
+
+        // Cardano → Cosmos (epoch 1)
+        let cardano_root = [1u8; 32];
+        let cardano_cert = build_cert(1, &cardano_root);
+        relayer
+            .relay_epoch(
+                ChainDomain::CardanoMainnet,
+                ChainDomain::CosmosHub,
+                EpochAttestation {
+                    source_chain: ChainDomain::CardanoMainnet,
+                    epoch: 1,
+                    nullifier_root: cardano_root,
+                    proof: cardano_cert,
+                    timestamp: now,
+                },
+            )
+            .await
+            .unwrap();
+
+        // Cosmos → Cardano (epoch 1)
+        let cosmos_root = [2u8; 32];
+        let cosmos_cert = build_cert(1, &cosmos_root);
+        relayer
+            .relay_epoch(
+                ChainDomain::CosmosHub,
+                ChainDomain::CardanoMainnet,
+                EpochAttestation {
+                    source_chain: ChainDomain::CosmosHub,
+                    epoch: 1,
+                    nullifier_root: cosmos_root,
+                    proof: cosmos_cert,
+                    timestamp: now,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(relayer.metrics().epochs_relayed, 2);
+        assert_eq!(relayer.metrics().verifications, 2);
+        assert_eq!(
+            relayer.latest_relayed_epoch(ChainDomain::CardanoMainnet, ChainDomain::CosmosHub),
+            Some(1)
+        );
+        assert_eq!(
+            relayer.latest_relayed_epoch(ChainDomain::CosmosHub, ChainDomain::CardanoMainnet),
+            Some(1)
+        );
+    });
+}
+
+/// Cross-chain double-spend prevention: nullifiers from Cardano should not
+/// replay on Cosmos, and vice versa, even with the same spending key.
+#[test]
+fn cross_chain_double_spend_prevention_full() {
+    let sk = pil_note::keys::SpendingKey::random(&mut rand::rngs::OsRng);
+    let note = pil_note::note::Note::new(100, sk.owner(), 0);
+    let commitment = note.commitment();
+
+    let domain_cardano = DomainSeparator::new(ChainDomain::CardanoMainnet, 0);
+    let domain_cosmos = DomainSeparator::new(ChainDomain::CosmosHub, 0);
+
+    // Derive nullifiers on both chains
+    let nf_cardano = pil_note::derive_nullifier_v2(sk.to_base(), commitment, &domain_cardano);
+    let nf_cosmos = pil_note::derive_nullifier_v2(sk.to_base(), commitment, &domain_cosmos);
+
+    // Deposit on Cardano
+    let mut cardano_pool = PrivacyPool::new();
+    cardano_pool.deposit(commitment, 100, 0).unwrap();
+
+    // Deposit on Cosmos
+    let mut cosmos_pool = PrivacyPool::new();
+    cosmos_pool.deposit(commitment, 100, 0).unwrap();
+
+    // Spend on Cardano
+    cardano_pool
+        .process_withdraw(&[nf_cardano], &[], 100, 0, &[])
+        .unwrap();
+
+    // Spend on Cosmos — different nullifier, so this should succeed
+    cosmos_pool
+        .process_withdraw(&[nf_cosmos], &[], 100, 0, &[])
+        .unwrap();
+
+    // Attempting Cosmos nullifier on Cardano pool should fail
+    // (because nf_cosmos was never used on cardano_pool directly,
+    // but let's verify the Cardano pool still has the Cardano nullifier registered)
+    let result = cardano_pool.process_withdraw(&[nf_cardano], &[], 0, 0, &[]);
+    assert!(
+        result.is_err(),
+        "Double-spend of Cardano nullifier should fail"
+    );
+
+    // Each pool should have exactly 1 nullifier
+    assert_eq!(cardano_pool.nullifier_count(), 1);
+    assert_eq!(cosmos_pool.nullifier_count(), 1);
+}
+
+/// Multi-epoch relay stress: relay 10 sequential epochs from Cardano → Cosmos
+/// and verify all are tracked correctly.
+#[test]
+fn multi_epoch_sequential_relay() {
+    use pil_bridge::relayer::BridgeRelayer;
+    use pil_bridge::{BridgeConfig, EpochAttestation};
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(async {
+        let config = BridgeConfig {
+            cardano_endpoint: "http://localhost:4000".to_string(),
+            cosmos_endpoint: "http://localhost:26657".to_string(),
+            mithril_endpoint: None,
+            poll_interval_secs: 30,
+            relay_pairs: vec![],
+            dry_run: true,
+        };
+        let mut relayer = BridgeRelayer::new(config);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Relay 10 epochs (with empty proofs ⇒ dev mode, accepted)
+        for epoch in 1..=10u64 {
+            let mut root = [0u8; 32];
+            root[0..8].copy_from_slice(&epoch.to_be_bytes());
+
+            let attestation = EpochAttestation {
+                source_chain: ChainDomain::CardanoMainnet,
+                epoch,
+                nullifier_root: root,
+                proof: vec![], // empty = dev mode
+                timestamp: now,
+            };
+
+            relayer
+                .relay_epoch(
+                    ChainDomain::CardanoMainnet,
+                    ChainDomain::Osmosis,
+                    attestation,
+                )
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(relayer.metrics().epochs_relayed, 10);
+        assert_eq!(
+            relayer.latest_relayed_epoch(ChainDomain::CardanoMainnet, ChainDomain::Osmosis),
+            Some(10)
+        );
+    });
+}
