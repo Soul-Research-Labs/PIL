@@ -41,6 +41,7 @@
 //! 5. **Mithril**: Light client proofs via Mithril allow other chains
 //!    (Cosmos via IBC) to verify Cardano state without running a full node.
 
+pub mod batcher;
 pub mod datum;
 pub mod redeemer;
 pub mod transaction;
