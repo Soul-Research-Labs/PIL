@@ -86,3 +86,34 @@ mod tests {
         assert!(ProofEnvelope::wrap(&too_big).is_err());
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn envelope_roundtrip_any_size(len in 0usize..=ENVELOPE_SIZE) {
+            let data: Vec<u8> = (0..len).map(|i| (i % 256) as u8).collect();
+            let env = ProofEnvelope::wrap(&data).unwrap();
+            prop_assert_eq!(env.size(), ENVELOPE_SIZE);
+            prop_assert_eq!(env.unwrap(), &data[..]);
+        }
+
+        #[test]
+        fn envelope_rejects_any_oversized(extra in 1usize..1024) {
+            let data = vec![0u8; ENVELOPE_SIZE + extra];
+            prop_assert!(ProofEnvelope::wrap(&data).is_err());
+        }
+
+        #[test]
+        fn envelope_constant_size(len1 in 0usize..=ENVELOPE_SIZE, len2 in 0usize..=ENVELOPE_SIZE) {
+            let d1: Vec<u8> = vec![0xAA; len1];
+            let d2: Vec<u8> = vec![0xBB; len2];
+            let e1 = ProofEnvelope::wrap(&d1).unwrap();
+            let e2 = ProofEnvelope::wrap(&d2).unwrap();
+            prop_assert_eq!(e1.size(), e2.size(), "all envelopes must be same size");
+        }
+    }
+}

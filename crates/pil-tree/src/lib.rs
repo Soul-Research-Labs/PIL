@@ -200,3 +200,62 @@ mod tests {
         assert!(path.verify(leaf, tree.root()));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Poseidon hashing over depth-32 trees is expensive; keep case count low.
+    const TREE_PROPTEST_CASES: u32 = 4;
+
+    fn arb_base() -> impl Strategy<Value = Base> {
+        any::<u64>().prop_map(Base::from)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(TREE_PROPTEST_CASES))]
+
+        #[test]
+        fn append_and_verify_any_leaf(val in arb_base()) {
+            let mut tree = IncrementalMerkleTree::new();
+            let idx = tree.append(val).unwrap();
+            let path = tree.authentication_path(idx).unwrap();
+            prop_assert!(path.verify(val, tree.root()));
+        }
+
+        #[test]
+        fn distinct_leaves_distinct_roots(a_val in 1u64..u64::MAX, b_val in 1u64..u64::MAX) {
+            prop_assume!(a_val != b_val);
+            let mut t1 = IncrementalMerkleTree::new();
+            t1.append(Base::from(a_val)).unwrap();
+            let mut t2 = IncrementalMerkleTree::new();
+            t2.append(Base::from(b_val)).unwrap();
+            prop_assert_ne!(t1.root(), t2.root());
+        }
+
+        #[test]
+        fn all_paths_valid_after_bulk_insert(seed in 0u64..1000) {
+            let mut tree = IncrementalMerkleTree::new();
+            let n = (seed % 8) + 2; // 2..9 leaves
+            let leaves: Vec<Base> = (0..n).map(|i| Base::from(seed * 100 + i)).collect();
+            for leaf in &leaves {
+                tree.append(*leaf).unwrap();
+            }
+            // Verify the last inserted leaf's path (frontier-based trees
+            // only guarantee the most recent path is reconstructible)
+            let last_idx = n - 1;
+            let path = tree.authentication_path(last_idx).unwrap();
+            prop_assert!(path.verify(leaves[last_idx as usize], tree.root()));
+        }
+
+        #[test]
+        fn wrong_leaf_fails_verification(val in arb_base(), wrong in arb_base()) {
+            prop_assume!(val != wrong);
+            let mut tree = IncrementalMerkleTree::new();
+            let idx = tree.append(val).unwrap();
+            let path = tree.authentication_path(idx).unwrap();
+            prop_assert!(!path.verify(wrong, tree.root()));
+        }
+    }
+}

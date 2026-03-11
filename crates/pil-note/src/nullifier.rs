@@ -65,3 +65,53 @@ mod tests {
         assert_ne!(n_v1, n_v2);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use pil_primitives::domain::ChainDomain;
+    use proptest::prelude::*;
+
+    fn arb_base() -> impl Strategy<Value = Base> {
+        any::<u64>().prop_map(Base::from)
+    }
+
+    proptest! {
+        #[test]
+        fn v1_deterministic(sk in arb_base(), cm in arb_base()) {
+            let commitment = Commitment(cm);
+            let n1 = derive_nullifier_v1(sk, commitment);
+            let n2 = derive_nullifier_v1(sk, commitment);
+            prop_assert_eq!(n1, n2);
+        }
+
+        #[test]
+        fn v2_cross_chain_isolation(sk in arb_base(), cm in arb_base(), app_id in 0u32..100) {
+            let commitment = Commitment(cm);
+            let d_cardano = DomainSeparator::new(ChainDomain::CardanoMainnet, app_id);
+            let d_cosmos = DomainSeparator::new(ChainDomain::CosmosHub, app_id);
+            let n1 = derive_nullifier_v2(sk, commitment, &d_cardano);
+            let n2 = derive_nullifier_v2(sk, commitment, &d_cosmos);
+            prop_assert_ne!(n1, n2, "same note on different chains must produce different nullifiers");
+        }
+
+        #[test]
+        fn v2_app_isolation(sk in arb_base(), cm in arb_base()) {
+            let commitment = Commitment(cm);
+            let d1 = DomainSeparator::new(ChainDomain::CardanoMainnet, 0);
+            let d2 = DomainSeparator::new(ChainDomain::CardanoMainnet, 1);
+            let n1 = derive_nullifier_v2(sk, commitment, &d1);
+            let n2 = derive_nullifier_v2(sk, commitment, &d2);
+            prop_assert_ne!(n1, n2, "same note in different apps must produce different nullifiers");
+        }
+
+        #[test]
+        fn different_keys_different_nullifiers(sk1 in 1u64..u64::MAX, sk2 in 1u64..u64::MAX, cm in arb_base()) {
+            prop_assume!(sk1 != sk2);
+            let commitment = Commitment(cm);
+            let n1 = derive_nullifier_v1(Base::from(sk1), commitment);
+            let n2 = derive_nullifier_v1(Base::from(sk2), commitment);
+            prop_assert_ne!(n1, n2, "different spending keys must produce different nullifiers");
+        }
+    }
+}

@@ -1,0 +1,37 @@
+[package]
+name = "pil-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+pil-primitives = { path = "../crates/pil-primitives" }
+pil-tree = { path = "../crates/pil-tree" }
+pil-note = { path = "../crates/pil-note" }
+pasta_curves = "0.5"
+ff = "0.13"
+arbitrary = { version = "1", features = ["derive"] }
+
+[[bin]]
+name = "fuzz_poseidon"
+path = "fuzz_targets/fuzz_poseidon.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_merkle_tree"
+path = "fuzz_targets/fuzz_merkle_tree.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_envelope"
+path = "fuzz_targets/fuzz_envelope.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_nullifier"
+path = "fuzz_targets/fuzz_nullifier.rs"
+doc = false

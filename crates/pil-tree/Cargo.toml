@@ -11,3 +11,6 @@ pasta_curves = { workspace = true }
 ff = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

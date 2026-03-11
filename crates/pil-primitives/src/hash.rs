@@ -164,3 +164,57 @@ mod tests {
         assert_eq!(h1, h2);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_base() -> impl Strategy<Value = Base> {
+        any::<u64>().prop_map(Base::from)
+    }
+
+    proptest! {
+        #[test]
+        fn poseidon_hash2_deterministic(a in arb_base(), b in arb_base()) {
+            let h1 = poseidon_hash2(a, b);
+            let h2 = poseidon_hash2(a, b);
+            prop_assert_eq!(h1, h2);
+        }
+
+        #[test]
+        fn poseidon_hash2_not_commutative(a_val in 1u64..u64::MAX, b_val in 1u64..u64::MAX) {
+            prop_assume!(a_val != b_val);
+            let a = Base::from(a_val);
+            let b = Base::from(b_val);
+            let h1 = poseidon_hash2(a, b);
+            let h2 = poseidon_hash2(b, a);
+            prop_assert_ne!(h1, h2);
+        }
+
+        #[test]
+        fn poseidon_hash3_deterministic(a in arb_base(), b in arb_base(), c in arb_base()) {
+            let h1 = poseidon_hash3(a, b, c);
+            let h2 = poseidon_hash3(a, b, c);
+            prop_assert_eq!(h1, h2);
+        }
+
+        #[test]
+        fn poseidon_single_vs_double(val in arb_base()) {
+            let h1 = poseidon_hash(val);
+            let h2 = poseidon_hash2(val, Base::ZERO);
+            prop_assert_eq!(h1, h2);
+        }
+
+        #[test]
+        fn poseidon_hash2_collision_resistance(
+            a1 in arb_base(), b1 in arb_base(),
+            a2 in arb_base(), b2 in arb_base(),
+        ) {
+            prop_assume!(a1 != a2 || b1 != b2);
+            let h1 = poseidon_hash2(a1, b1);
+            let h2 = poseidon_hash2(a2, b2);
+            prop_assert_ne!(h1, h2);
+        }
+    }
+}
