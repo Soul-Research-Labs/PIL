@@ -161,6 +161,11 @@ impl PrivacyPool {
     pub fn nullifier_count(&self) -> usize {
         self.nullifiers.len()
     }
+
+    /// Check if a nullifier has been spent.
+    pub fn is_nullifier_spent(&self, nf: &Nullifier) -> bool {
+        self.nullifiers.contains(nf)
+    }
 }
 
 impl Default for PrivacyPool {

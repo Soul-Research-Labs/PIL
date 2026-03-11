@@ -16,13 +16,14 @@ default = []
 library = []
 
 [dependencies]
-cosmwasm-std = "2.0"
+cosmwasm-std = { version = "2.0", features = ["stargate"] }
 cosmwasm-schema = "2.0"
 cw-storage-plus = "2.0"
 schemars = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"
 hex = "0.4"
+sha2 = "0.10"
 
 [dev-dependencies]
 cosmwasm-vm = "2.0"

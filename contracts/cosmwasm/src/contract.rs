@@ -1,9 +1,11 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, BankMsg, Binary, Coin, Deps, DepsMut, Env, MessageInfo,
-    Response, StdResult, Uint128,
+    to_json_binary, BankMsg, Binary, Coin, CosmosMsg, Deps, DepsMut, Env, IbcMsg,
+    IbcTimeout, MessageInfo, Response, StdResult, Uint128,
 };
+
+use sha2::{Digest, Sha256};
 
 use crate::error::ContractError;
 use crate::msg::{
@@ -117,7 +119,7 @@ pub fn execute(
 
 fn execute_deposit(
     deps: DepsMut,
-    env: Env,
+    _env: Env,
     info: MessageInfo,
     commitment: String,
 ) -> Result<Response, ContractError> {
@@ -151,13 +153,13 @@ fn execute_deposit(
     let note_index = state.note_count;
     state.note_count += 1;
     state.pool_balance += deposit.amount;
-    // In production: recompute merkle_root = Poseidon(old_root, commitment)
-    // For now: store a hash placeholder
-    state.merkle_root = format!(
-        "{}{}",
-        &state.merkle_root[..32],
-        &commitment[..32.min(commitment.len())]
-    );
+    // Compute new Merkle root as SHA-256(old_root || commitment)
+    let old_root_bytes =
+        hex::decode(&state.merkle_root).unwrap_or_else(|_| vec![0u8; 32]);
+    let mut hasher = Sha256::new();
+    hasher.update(&old_root_bytes);
+    hasher.update(&commitment_bytes);
+    state.merkle_root = hex::encode(hasher.finalize());
     POOL_STATE.save(deps.storage, &state)?;
 
     // Store the commitment
@@ -178,6 +180,7 @@ fn execute_deposit(
         .add_attribute("denom", &deposit.denom))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_transfer(
     deps: DepsMut,
     env: Env,
@@ -249,9 +252,14 @@ fn execute_transfer(
             },
         )?;
         pool_state.note_count += 1;
+        // Update Merkle root: SHA-256(old_root || commitment)
+        let old_root_bytes =
+            hex::decode(&pool_state.merkle_root).unwrap_or_else(|_| vec![0u8; 32]);
+        let mut hasher = Sha256::new();
+        hasher.update(&old_root_bytes);
+        hasher.update(&cm_bytes);
+        pool_state.merkle_root = hex::encode(hasher.finalize());
     }
-    // Update merkle root placeholder
-    pool_state.merkle_root = format!("transfer_{}", pool_state.note_count);
     POOL_STATE.save(deps.storage, &pool_state)?;
 
     Ok(Response::new()
@@ -260,6 +268,7 @@ fn execute_transfer(
         .add_attribute("outputs_created", output_commitments.len().to_string()))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_withdraw(
     deps: DepsMut,
     env: Env,
@@ -339,6 +348,13 @@ fn execute_withdraw(
             },
         )?;
         pool_state.note_count += 1;
+        // Update Merkle root: SHA-256(old_root || commitment)
+        let old_root_bytes =
+            hex::decode(&pool_state.merkle_root).unwrap_or_else(|_| vec![0u8; 32]);
+        let mut hasher = Sha256::new();
+        hasher.update(&old_root_bytes);
+        hasher.update(&cm_bytes);
+        pool_state.merkle_root = hex::encode(hasher.finalize());
     }
     pool_state.pool_balance -= exit_amount;
     POOL_STATE.save(deps.storage, &pool_state)?;
@@ -397,19 +413,54 @@ fn execute_finalize_epoch(
 }
 
 fn execute_publish_epoch_ibc(
-    _deps: DepsMut,
-    _env: Env,
-    _info: MessageInfo,
-    _channel_id: String,
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    channel_id: String,
 ) -> Result<Response, ContractError> {
-    // In production: create IBC SendPacket with epoch root data
-    // let packet = IbcMsg::SendPacket {
-    //     channel_id,
-    //     data: to_json_binary(&EpochSyncPacket { ... })?,
-    //     timeout: IbcTimeout::with_timestamp(env.block.time.plus_seconds(300)),
-    // };
+    let config = CONFIG.load(deps.storage)?;
+    if info.sender != config.admin {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    let state = POOL_STATE.load(deps.storage)?;
+
+    // Build the epoch sync packet for the *previous* (most recently finalized) epoch
+    let epoch = if state.current_epoch > 0 {
+        state.current_epoch - 1
+    } else {
+        return Err(ContractError::EpochMismatch {
+            expected: 1,
+            got: 0,
+        });
+    };
+
+    let epoch_root = EPOCH_ROOTS.load(deps.storage, epoch).map_err(|_| {
+        ContractError::EpochMismatch {
+            expected: epoch,
+            got: state.current_epoch,
+        }
+    })?;
+
+    let packet_data = crate::ibc::EpochSyncPacketData {
+        source_chain_id: config.chain_domain_id,
+        epoch,
+        nullifier_root: epoch_root.nullifier_root,
+        nullifier_count: epoch_root.note_count_at_finalization,
+        cumulative_root: state.merkle_root.clone(),
+    };
+
+    let ibc_msg = IbcMsg::SendPacket {
+        channel_id: channel_id.clone(),
+        data: to_json_binary(&packet_data)?,
+        timeout: IbcTimeout::with_timestamp(env.block.time.plus_seconds(300)),
+    };
+
     Ok(Response::new()
-        .add_attribute("action", "publish_epoch_root_ibc"))
+        .add_message(CosmosMsg::Ibc(ibc_msg))
+        .add_attribute("action", "publish_epoch_root_ibc")
+        .add_attribute("channel_id", channel_id)
+        .add_attribute("epoch", epoch.to_string()))
 }
 
 fn execute_receive_epoch_root(
@@ -639,5 +690,248 @@ mod tests {
         let info = message_info(&Addr::unchecked("user1"), &[]);
         let err = execute(deps.as_mut(), mock_env(), info, transfer_msg2).unwrap_err();
         assert!(matches!(err, ContractError::NullifierAlreadySpent { .. }));
+    }
+
+    #[test]
+    fn test_deposit_merkle_root_is_sha256_chain() {
+        let mut deps = mock_dependencies();
+        setup_contract(deps.as_mut());
+
+        let commitment = "a".repeat(64);
+        let msg = ExecuteMsg::Deposit { commitment };
+        let info = message_info(&Addr::unchecked("user1"), &coins(500, "uatom"));
+        execute(deps.as_mut(), mock_env(), info, msg).unwrap();
+
+        let state = POOL_STATE.load(deps.as_ref().storage).unwrap();
+        // Root should be a 64-char hex string (32 bytes)
+        assert_eq!(state.merkle_root.len(), 64);
+        // Should not be the initial zero root
+        assert_ne!(state.merkle_root, "0".repeat(64));
+
+        // Verify it's valid hex
+        let decoded = hex::decode(&state.merkle_root).unwrap();
+        assert_eq!(decoded.len(), 32);
+    }
+
+    #[test]
+    fn test_deposit_merkle_root_deterministic() {
+        // Two contracts with same deposits should produce the same root
+        let mut deps1 = mock_dependencies();
+        let mut deps2 = mock_dependencies();
+        setup_contract(deps1.as_mut());
+        setup_contract(deps2.as_mut());
+
+        let commitment = "a".repeat(64);
+        for deps in [&mut deps1, &mut deps2] {
+            let msg = ExecuteMsg::Deposit {
+                commitment: commitment.clone(),
+            };
+            let info = message_info(&Addr::unchecked("user1"), &coins(100, "uatom"));
+            execute(deps.as_mut(), mock_env(), info, msg).unwrap();
+        }
+
+        let state1 = POOL_STATE.load(deps1.as_ref().storage).unwrap();
+        let state2 = POOL_STATE.load(deps2.as_ref().storage).unwrap();
+        assert_eq!(state1.merkle_root, state2.merkle_root);
+    }
+
+    #[test]
+    fn test_publish_epoch_ibc_requires_admin() {
+        let mut deps = mock_dependencies();
+        setup_contract(deps.as_mut());
+
+        let msg = ExecuteMsg::PublishEpochRootIbc {
+            channel_id: "channel-0".to_string(),
+        };
+        let info = message_info(&Addr::unchecked("not_admin"), &[]);
+        let err = execute(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+        assert!(matches!(err, ContractError::Unauthorized {}));
+    }
+
+    #[test]
+    fn test_publish_epoch_ibc_requires_finalized_epoch() {
+        let mut deps = mock_dependencies();
+        setup_contract(deps.as_mut());
+
+        // No epoch finalized yet → should fail
+        let msg = ExecuteMsg::PublishEpochRootIbc {
+            channel_id: "channel-0".to_string(),
+        };
+        let info = message_info(&Addr::unchecked("admin"), &[]);
+        let err = execute(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+        assert!(matches!(err, ContractError::EpochMismatch { .. }));
+    }
+
+    #[test]
+    fn test_publish_epoch_ibc_after_finalization() {
+        let mut deps = mock_dependencies();
+        setup_contract(deps.as_mut());
+
+        // Finalize epoch 0
+        let finalize = ExecuteMsg::FinalizeEpoch {};
+        let info = message_info(&Addr::unchecked("admin"), &[]);
+        execute(deps.as_mut(), mock_env(), info, finalize).unwrap();
+
+        // Now publish should succeed and include an IBC message
+        let publish = ExecuteMsg::PublishEpochRootIbc {
+            channel_id: "channel-42".to_string(),
+        };
+        let info = message_info(&Addr::unchecked("admin"), &[]);
+        let res = execute(deps.as_mut(), mock_env(), info, publish).unwrap();
+
+        assert_eq!(res.messages.len(), 1);
+        assert_eq!(
+            res.attributes
+                .iter()
+                .find(|a| a.key == "action")
+                .unwrap()
+                .value,
+            "publish_epoch_root_ibc"
+        );
+        assert_eq!(
+            res.attributes
+                .iter()
+                .find(|a| a.key == "epoch")
+                .unwrap()
+                .value,
+            "0"
+        );
+    }
+
+    #[test]
+    fn test_receive_epoch_root() {
+        let mut deps = mock_dependencies();
+        setup_contract(deps.as_mut());
+
+        let msg = ExecuteMsg::ReceiveEpochRoot {
+            source_chain_id: 11,
+            epoch: 5,
+            nullifier_root: "ff".repeat(32),
+        };
+        let info = message_info(&Addr::unchecked("admin"), &[]);
+        let res = execute(deps.as_mut(), mock_env(), info, msg).unwrap();
+        assert_eq!(
+            res.attributes
+                .iter()
+                .find(|a| a.key == "action")
+                .unwrap()
+                .value,
+            "receive_epoch_root"
+        );
+
+        // Verify stored
+        let remote = REMOTE_EPOCH_ROOTS
+            .load(deps.as_ref().storage, (11, 5))
+            .unwrap();
+        assert_eq!(remote.epoch, 5);
+        assert_eq!(remote.source_chain_id, 11);
+    }
+
+    #[test]
+    fn test_query_config() {
+        let mut deps = mock_dependencies();
+        setup_contract(deps.as_mut());
+
+        let res = query(deps.as_ref(), mock_env(), QueryMsg::Config {}).unwrap();
+        let config: ConfigResponse = from_json(res).unwrap();
+        assert_eq!(config.chain_domain_id, 3);
+        assert_eq!(config.app_id, 1);
+        assert_eq!(config.denom, "uatom");
+    }
+
+    #[test]
+    fn test_query_epoch_root() {
+        let mut deps = mock_dependencies();
+        setup_contract(deps.as_mut());
+
+        // No epoch finalized yet
+        let res = query(deps.as_ref(), mock_env(), QueryMsg::EpochRoot { epoch: 0 }).unwrap();
+        let root: EpochRootResponse = from_json(res).unwrap();
+        assert_eq!(root.nullifier_root, None);
+
+        // Finalize epoch 0
+        let info = message_info(&Addr::unchecked("admin"), &[]);
+        execute(deps.as_mut(), mock_env(), info, ExecuteMsg::FinalizeEpoch {}).unwrap();
+
+        // Now epoch 0 should exist
+        let res = query(deps.as_ref(), mock_env(), QueryMsg::EpochRoot { epoch: 0 }).unwrap();
+        let root: EpochRootResponse = from_json(res).unwrap();
+        assert!(root.nullifier_root.is_some());
+    }
+
+    #[test]
+    fn test_query_nullifier_status() {
+        let mut deps = mock_dependencies();
+        setup_contract(deps.as_mut());
+
+        let nf = "b".repeat(64);
+
+        // Not spent
+        let res = query(
+            deps.as_ref(),
+            mock_env(),
+            QueryMsg::NullifierStatus { nullifier: nf.clone() },
+        )
+        .unwrap();
+        let status: NullifierStatusResponse = from_json(res).unwrap();
+        assert!(!status.spent);
+        assert_eq!(status.epoch, None);
+
+        // Deposit then transfer to spend a nullifier
+        let deposit = ExecuteMsg::Deposit { commitment: "a".repeat(64) };
+        let info = message_info(&Addr::unchecked("user1"), &coins(100, "uatom"));
+        execute(deps.as_mut(), mock_env(), info, deposit).unwrap();
+
+        let state = POOL_STATE.load(deps.as_ref().storage).unwrap();
+        let transfer = ExecuteMsg::Transfer {
+            proof: "deadbeef".to_string(),
+            merkle_root: state.merkle_root,
+            nullifiers: vec![nf.clone()],
+            output_commitments: vec!["c".repeat(64)],
+            domain_chain_id: 3,
+            domain_app_id: 1,
+        };
+        let info = message_info(&Addr::unchecked("user1"), &[]);
+        execute(deps.as_mut(), mock_env(), info, transfer).unwrap();
+
+        // Now spent
+        let res = query(
+            deps.as_ref(),
+            mock_env(),
+            QueryMsg::NullifierStatus { nullifier: nf },
+        )
+        .unwrap();
+        let status: NullifierStatusResponse = from_json(res).unwrap();
+        assert!(status.spent);
+        assert_eq!(status.epoch, Some(0));
+    }
+
+    #[test]
+    fn test_wrong_denom_fails() {
+        let mut deps = mock_dependencies();
+        setup_contract(deps.as_mut());
+
+        let msg = ExecuteMsg::Deposit { commitment: "a".repeat(64) };
+        let info = message_info(&Addr::unchecked("user1"), &coins(100, "uosmo"));
+        let err = execute(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+        assert!(matches!(err, ContractError::WrongDenom { .. }));
+    }
+
+    #[test]
+    fn test_withdraw_insufficient_balance() {
+        let mut deps = mock_dependencies();
+        setup_contract(deps.as_mut());
+
+        let msg = ExecuteMsg::Withdraw {
+            proof: "deadbeef".to_string(),
+            merkle_root: "0".repeat(64),
+            nullifiers: vec!["b".repeat(64)],
+            change_commitments: vec![],
+            exit_amount: Uint128::new(1000),
+            recipient: "cosmos1recipient".to_string(),
+        };
+        let info = message_info(&Addr::unchecked("user1"), &[]);
+        let err = execute(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+        assert!(matches!(err, ContractError::InsufficientBalance { .. }));
     }
 }

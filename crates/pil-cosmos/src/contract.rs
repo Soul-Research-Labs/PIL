@@ -97,7 +97,35 @@ impl CosmosPrivacyPool {
                 nullifier_count: self.pool.nullifier_count() as u64,
                 chain_domain_id: self.config.chain_domain_id,
             })),
-            _ => Ok(QueryResponse::NotImplemented),
+            QueryMsg::MerkleRoot {} => Ok(QueryResponse::MerkleRoot {
+                root: hex::encode(format!("{:?}", self.pool.root())),
+            }),
+            QueryMsg::NullifierSpent { nullifier } => {
+                let field = Self::hex_to_field(&nullifier)?;
+                let nf = pil_primitives::types::Nullifier(field);
+                let spent = self.pool.is_nullifier_spent(&nf);
+                Ok(QueryResponse::NullifierSpent { spent })
+            }
+            QueryMsg::EpochRoots { .. } => {
+                // Epoch roots are stored per-epoch by the on-chain contract;
+                // this business-logic layer doesn't persist epoch roots separately.
+                Ok(QueryResponse::EpochRoots { roots: Vec::new() })
+            }
+            QueryMsg::RemoteEpochRoots { chain_id } => {
+                let roots: Vec<(u64, String)> = self
+                    .remote_epoch_roots
+                    .iter()
+                    .filter(|r| r.source_chain_id == chain_id)
+                    .map(|r| (r.epoch, r.nullifier_root.clone()))
+                    .collect();
+                Ok(QueryResponse::RemoteEpochRoots { roots })
+            }
+            QueryMsg::Config {} => Ok(QueryResponse::Config {
+                chain_domain_id: self.config.chain_domain_id,
+                app_id: self.config.app_id,
+                admin: self.config.admin.clone(),
+                epoch_duration_secs: self.config.epoch_duration_secs,
+            }),
         }
     }
 
@@ -272,7 +300,24 @@ pub enum ExecuteResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueryResponse {
     Status(StatusResponse),
-    NotImplemented,
+    MerkleRoot {
+        root: String,
+    },
+    NullifierSpent {
+        spent: bool,
+    },
+    EpochRoots {
+        roots: Vec<(u64, String)>,
+    },
+    RemoteEpochRoots {
+        roots: Vec<(u64, String)>,
+    },
+    Config {
+        chain_domain_id: u32,
+        app_id: u32,
+        admin: String,
+        epoch_duration_secs: u64,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -477,5 +522,129 @@ mod tests {
         .unwrap();
         assert_eq!(pool.remote_epoch_roots.len(), 1);
         assert_eq!(pool.remote_epoch_roots[0].epoch, 5);
+    }
+
+    #[test]
+    fn query_merkle_root() {
+        let mut pool = make_pool();
+        deposit_field_value(&mut pool, 42, 100);
+
+        let result = pool.query(QueryMsg::MerkleRoot {}).unwrap();
+        match result {
+            QueryResponse::MerkleRoot { root } => {
+                assert!(!root.is_empty());
+            }
+            _ => panic!("expected MerkleRoot response"),
+        }
+    }
+
+    #[test]
+    fn query_nullifier_spent() {
+        let mut pool = make_pool();
+        deposit_field_value(&mut pool, 100, 50);
+
+        let nf_hex = hex::encode(
+            <pil_primitives::types::Base as ff::PrimeField>::to_repr(
+                &pil_primitives::types::Base::from(3000u64),
+            )
+            .as_ref(),
+        );
+
+        // Not spent yet
+        let result = pool
+            .query(QueryMsg::NullifierSpent {
+                nullifier: nf_hex.clone(),
+            })
+            .unwrap();
+        match result {
+            QueryResponse::NullifierSpent { spent } => assert!(!spent),
+            _ => panic!("expected NullifierSpent response"),
+        }
+
+        // Spend it
+        pool.execute(ExecuteMsg::Withdraw {
+            proof: hex::encode([0u8; 32]),
+            merkle_root: "00".repeat(32),
+            nullifiers: vec![nf_hex.clone()],
+            change_commitments: vec![],
+            exit_amount: 10,
+            recipient: "cosmos1x".to_string(),
+        })
+        .unwrap();
+
+        // Now spent
+        let result = pool
+            .query(QueryMsg::NullifierSpent { nullifier: nf_hex })
+            .unwrap();
+        match result {
+            QueryResponse::NullifierSpent { spent } => assert!(spent),
+            _ => panic!("expected NullifierSpent response"),
+        }
+    }
+
+    #[test]
+    fn query_remote_epoch_roots() {
+        let mut pool = make_pool();
+
+        // Receive two epoch roots from chain 1 and one from chain 2
+        pool.execute(ExecuteMsg::ReceiveEpochRoot {
+            source_chain_id: 1,
+            epoch: 0,
+            nullifier_root: "aa".repeat(32),
+        })
+        .unwrap();
+        pool.execute(ExecuteMsg::ReceiveEpochRoot {
+            source_chain_id: 1,
+            epoch: 1,
+            nullifier_root: "bb".repeat(32),
+        })
+        .unwrap();
+        pool.execute(ExecuteMsg::ReceiveEpochRoot {
+            source_chain_id: 2,
+            epoch: 0,
+            nullifier_root: "cc".repeat(32),
+        })
+        .unwrap();
+
+        let result = pool
+            .query(QueryMsg::RemoteEpochRoots { chain_id: 1 })
+            .unwrap();
+        match result {
+            QueryResponse::RemoteEpochRoots { roots } => {
+                assert_eq!(roots.len(), 2);
+                assert_eq!(roots[0].0, 0);
+                assert_eq!(roots[1].0, 1);
+            }
+            _ => panic!("expected RemoteEpochRoots response"),
+        }
+
+        let result = pool
+            .query(QueryMsg::RemoteEpochRoots { chain_id: 2 })
+            .unwrap();
+        match result {
+            QueryResponse::RemoteEpochRoots { roots } => {
+                assert_eq!(roots.len(), 1);
+            }
+            _ => panic!("expected RemoteEpochRoots response"),
+        }
+    }
+
+    #[test]
+    fn query_config() {
+        let pool = make_pool();
+        let result = pool.query(QueryMsg::Config {}).unwrap();
+        match result {
+            QueryResponse::Config {
+                chain_domain_id,
+                app_id,
+                admin,
+                ..
+            } => {
+                assert_eq!(chain_domain_id, 10);
+                assert_eq!(app_id, 1);
+                assert_eq!(admin, "cosmos1...");
+            }
+            _ => panic!("expected Config response"),
+        }
     }
 }

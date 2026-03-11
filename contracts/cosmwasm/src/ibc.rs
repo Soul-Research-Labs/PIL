@@ -16,14 +16,14 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    from_json, to_json_binary, Binary, DepsMut, Env, IbcBasicResponse,
+    from_json, to_json_binary, DepsMut, Env, IbcBasicResponse,
     IbcChannelCloseMsg, IbcChannelConnectMsg, IbcChannelOpenMsg,
     IbcChannelOpenResponse, IbcOrder, IbcPacketAckMsg, IbcPacketReceiveMsg,
     IbcPacketTimeoutMsg, IbcReceiveResponse, StdError, StdResult,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::state::{POOL_STATE, REMOTE_EPOCH_ROOTS, RemoteEpochRoot};
+use crate::state::{REMOTE_EPOCH_ROOTS, RemoteEpochRoot};
 
 /// IBC port and version for PIL epoch sync.
 pub const PIL_IBC_VERSION: &str = "pil-epoch-sync-1";
