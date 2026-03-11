@@ -60,6 +60,84 @@ impl ProvingKeys {
             params_withdraw,
         })
     }
+
+    /// Save the IPA Params to a directory.
+    ///
+    /// Writes `transfer_params.bin` and `withdraw_params.bin`.
+    /// PK/VK are not serialized because halo2_proofs 0.3 doesn't support it;
+    /// they are regenerated from params on load (which is fast since the
+    /// expensive random point generation is already done in the params).
+    pub fn save_params(&self, dir: &std::path::Path) -> Result<(), ProverError> {
+        std::fs::create_dir_all(dir).map_err(|e| ProverError::Io(format!("create dir: {e}")))?;
+
+        let transfer_path = dir.join("transfer_params.bin");
+        let mut f = std::fs::File::create(&transfer_path)
+            .map_err(|e| ProverError::Io(format!("create {}: {e}", transfer_path.display())))?;
+        self.params_transfer
+            .write(&mut f)
+            .map_err(|e| ProverError::Io(format!("write transfer params: {e}")))?;
+
+        let withdraw_path = dir.join("withdraw_params.bin");
+        let mut f = std::fs::File::create(&withdraw_path)
+            .map_err(|e| ProverError::Io(format!("create {}: {e}", withdraw_path.display())))?;
+        self.params_withdraw
+            .write(&mut f)
+            .map_err(|e| ProverError::Io(format!("write withdraw params: {e}")))?;
+
+        tracing::info!("Saved params to {}", dir.display());
+        Ok(())
+    }
+
+    /// Load params from a directory and regenerate PK/VK.
+    ///
+    /// Reads `transfer_params.bin` and `withdraw_params.bin`, then runs
+    /// keygen (deterministic from params) to recover PK/VK.
+    pub fn load_params(dir: &std::path::Path) -> Result<Self, ProverError> {
+        let transfer_path = dir.join("transfer_params.bin");
+        let mut f = std::fs::File::open(&transfer_path)
+            .map_err(|e| ProverError::Io(format!("open {}: {e}", transfer_path.display())))?;
+        let params_transfer = Params::<vesta::Affine>::read(&mut f)
+            .map_err(|e| ProverError::Io(format!("read transfer params: {e}")))?;
+
+        let withdraw_path = dir.join("withdraw_params.bin");
+        let mut f = std::fs::File::open(&withdraw_path)
+            .map_err(|e| ProverError::Io(format!("open {}: {e}", withdraw_path.display())))?;
+        let params_withdraw = Params::<vesta::Affine>::read(&mut f)
+            .map_err(|e| ProverError::Io(format!("read withdraw params: {e}")))?;
+
+        Self::from_params(params_transfer, params_withdraw)
+    }
+
+    /// Regenerate PK/VK from pre-existing Params.
+    fn from_params(
+        params_transfer: Params<vesta::Affine>,
+        params_withdraw: Params<vesta::Affine>,
+    ) -> Result<Self, ProverError> {
+        tracing::info!("Regenerating PK/VK from loaded params...");
+
+        let transfer_empty = TransferCircuit::empty();
+        let transfer_vk = keygen_vk(&params_transfer, &transfer_empty)
+            .map_err(|e| ProverError::Setup(format!("transfer vk: {e}")))?;
+        let transfer_pk = keygen_pk(&params_transfer, transfer_vk.clone(), &transfer_empty)
+            .map_err(|e| ProverError::Setup(format!("transfer pk: {e}")))?;
+
+        let withdraw_empty = WithdrawCircuit::empty();
+        let withdraw_vk = keygen_vk(&params_withdraw, &withdraw_empty)
+            .map_err(|e| ProverError::Setup(format!("withdraw vk: {e}")))?;
+        let withdraw_pk = keygen_pk(&params_withdraw, withdraw_vk.clone(), &withdraw_empty)
+            .map_err(|e| ProverError::Setup(format!("withdraw pk: {e}")))?;
+
+        tracing::info!("PK/VK regenerated from params");
+
+        Ok(Self {
+            transfer_pk,
+            transfer_vk,
+            withdraw_pk,
+            withdraw_vk,
+            params_transfer,
+            params_withdraw,
+        })
+    }
 }
 
 /// Generate a transfer proof.
@@ -138,6 +216,8 @@ pub enum ProverError {
     Setup(String),
     #[error("proof generation failed: {0}")]
     ProofGeneration(String),
+    #[error("I/O error: {0}")]
+    Io(String),
 }
 
 #[cfg(test)]
@@ -185,5 +265,29 @@ mod tests {
         assert_eq!(format!("{e}"), "key setup failed: test error");
         let e = ProverError::ProofGeneration("gen fail".into());
         assert_eq!(format!("{e}"), "proof generation failed: gen fail");
+        let e = ProverError::Io("disk full".into());
+        assert_eq!(format!("{e}"), "I/O error: disk full");
+    }
+
+    #[test]
+    fn params_save_load_roundtrip() {
+        let keys = ProvingKeys::setup().unwrap();
+        let dir = std::env::temp_dir().join("pil_prover_test_params");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        keys.save_params(&dir).unwrap();
+        assert!(dir.join("transfer_params.bin").exists());
+        assert!(dir.join("withdraw_params.bin").exists());
+
+        // Verify we can load params and regenerate PK/VK without error
+        let _loaded = ProvingKeys::load_params(&dir).unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_params_missing_dir_returns_error() {
+        let result = ProvingKeys::load_params(std::path::Path::new("/nonexistent/path"));
+        assert!(result.is_err());
     }
 }

@@ -64,6 +64,12 @@ enum Commands {
     Chains,
     /// Generate a new spending key
     Keygen,
+    /// Generate and save proving parameters to disk
+    SaveParams {
+        /// Output directory for params files
+        #[arg(short, long, default_value = "~/.pil/params")]
+        output: String,
+    },
     /// Generate Aiken validators for Cardano
     GenerateCardanoValidators {
         /// Output directory
@@ -75,6 +81,12 @@ enum Commands {
         /// Bind address
         #[arg(short, long, default_value = "127.0.0.1:3030")]
         bind: String,
+        /// Directory with cached params (skip keygen if present)
+        #[arg(long)]
+        params_dir: Option<String>,
+        /// API key for admin endpoints (finalize-epoch)
+        #[arg(long)]
+        api_key: Option<String>,
     },
 }
 
@@ -423,17 +435,60 @@ async fn main() {
                 hex::encode(owner.to_repr().as_ref())
             );
         }
-        Commands::Serve { bind } => {
-            println!("Starting PIL RPC server on {bind}...");
-            println!("Generating proving keys (this may take a moment)...");
+        Commands::SaveParams { output } => {
+            let dir = resolve_wallet_path(&output);
+            println!("Generating proving keys...");
             let keys = match pil_prover::ProvingKeys::setup() {
-                Ok(k) => std::sync::Arc::new(k),
+                Ok(k) => k,
                 Err(e) => {
                     eprintln!("Failed to generate proving keys: {e}");
                     return;
                 }
             };
-            let state = std::sync::Arc::new(tokio::sync::RwLock::new(pil_rpc::AppState::new(keys)));
+            match keys.save_params(&dir) {
+                Ok(()) => println!("Params saved to {}", dir.display()),
+                Err(e) => eprintln!("Failed to save params: {e}"),
+            }
+        }
+        Commands::Serve {
+            bind,
+            params_dir,
+            api_key,
+        } => {
+            println!("Starting PIL RPC server on {bind}...");
+            let keys = if let Some(ref dir) = params_dir {
+                let path = resolve_wallet_path(dir);
+                println!("Loading cached params from {}...", path.display());
+                match pil_prover::ProvingKeys::load_params(&path) {
+                    Ok(k) => std::sync::Arc::new(k),
+                    Err(e) => {
+                        eprintln!("Failed to load params ({e}), falling back to fresh keygen...");
+                        match pil_prover::ProvingKeys::setup() {
+                            Ok(k) => std::sync::Arc::new(k),
+                            Err(e) => {
+                                eprintln!("Failed to generate proving keys: {e}");
+                                return;
+                            }
+                        }
+                    }
+                }
+            } else {
+                println!("Generating proving keys (this may take a moment)...");
+                match pil_prover::ProvingKeys::setup() {
+                    Ok(k) => std::sync::Arc::new(k),
+                    Err(e) => {
+                        eprintln!("Failed to generate proving keys: {e}");
+                        return;
+                    }
+                }
+            };
+            let state = if let Some(key) = api_key {
+                std::sync::Arc::new(tokio::sync::RwLock::new(pil_rpc::AppState::with_api_key(
+                    keys, key,
+                )))
+            } else {
+                std::sync::Arc::new(tokio::sync::RwLock::new(pil_rpc::AppState::new(keys)))
+            };
             let router = pil_rpc::create_router(state);
             let listener = match tokio::net::TcpListener::bind(&bind).await {
                 Ok(l) => l,
