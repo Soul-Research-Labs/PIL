@@ -82,9 +82,10 @@ impl TransferCircuit {
 #[derive(Debug, Clone)]
 pub struct TransferConfig {
     advice: [Column<Advice>; 6],
+    _extra_advice: [Column<Advice>; 4], // inner_hash, left_hash, right_hash, extra
     instance: Column<Instance>,
     value_balance_sel: Selector,
-    _range_check: RangeCheckConfig,
+    range_check: RangeCheckConfig,
     merkle_path: MerklePathConfig,
     nullifier: NullifierDerivationConfig,
     input_commitment: CommitmentDerivationConfig,
@@ -108,10 +109,20 @@ impl Circuit<pallas::Base> for TransferCircuit {
             meta.advice_column(),
             meta.advice_column(),
         ];
+        // Extra advice columns for intermediate hash cells
+        let extra_advice: [Column<Advice>; 4] = [
+            meta.advice_column(), // inner_hash (nullifier)
+            meta.advice_column(), // left_hash (commitment)
+            meta.advice_column(), // right_hash (commitment)
+            meta.advice_column(), // range check bits
+        ];
         let instance = meta.instance_column();
         let value_balance_sel = meta.selector();
 
         for col in &advice {
+            meta.enable_equality(*col);
+        }
+        for col in &extra_advice {
             meta.enable_equality(*col);
         }
         meta.enable_equality(instance);
@@ -128,21 +139,27 @@ impl Circuit<pallas::Base> for TransferCircuit {
         });
 
         // Range check (64-bit) on value advice column
-        let range_check = RangeCheckConfig::configure(meta, advice[4]);
+        let range_check = RangeCheckConfig::configure(meta, extra_advice[3]);
 
         // Merkle path verification
         let merkle_path =
             MerklePathConfig::configure(meta, advice[0], advice[1], advice[2]);
 
-        // Nullifier derivation
-        let nullifier =
-            NullifierDerivationConfig::configure(meta, [advice[0], advice[1], advice[2]], advice[3]);
+        // Nullifier derivation (with inner_hash column)
+        let nullifier = NullifierDerivationConfig::configure(
+            meta,
+            [advice[0], advice[1], advice[2]],
+            advice[3],
+            extra_advice[0],
+        );
 
-        // Input note commitment
+        // Input note commitment (with left_hash, right_hash columns)
         let input_commitment = CommitmentDerivationConfig::configure(
             meta,
             [advice[0], advice[1], advice[2], advice[3]],
             advice[4],
+            extra_advice[1],
+            extra_advice[2],
         );
 
         // Output note commitment
@@ -150,13 +167,16 @@ impl Circuit<pallas::Base> for TransferCircuit {
             meta,
             [advice[0], advice[1], advice[2], advice[3]],
             advice[5],
+            extra_advice[1],
+            extra_advice[2],
         );
 
         TransferConfig {
             advice,
+            _extra_advice: extra_advice,
             instance,
             value_balance_sel,
-            _range_check: range_check,
+            range_check,
             merkle_path,
             nullifier,
             input_commitment,
@@ -189,17 +209,54 @@ impl Circuit<pallas::Base> for TransferCircuit {
             },
         )?;
 
-        // Region 2: Input commitment derivation + Merkle paths + nullifiers
-        // For each input note:
-        //   1. Derive commitment = H(H(value, owner), H(asset_id, randomness))
-        //   2. Derive nullifier = H(sk, H(commitment, domain))
-        //   3. Verify Merkle path from commitment to root
+        // Region 1b: Range checks on input/output values and fee
         for i in 0..NUM_INPUTS {
-            // Compute the owner from spending_key for input notes
+            layouter.assign_region(
+                || format!("range_check_input_{i}"),
+                |mut region| {
+                    config.range_check.assign_range_check(
+                        &mut region,
+                        0,
+                        self.input_values[i],
+                        crate::gadgets::RANGE_CHECK_BITS,
+                    )?;
+                    Ok(())
+                },
+            )?;
+        }
+        for i in 0..NUM_OUTPUTS {
+            layouter.assign_region(
+                || format!("range_check_output_{i}"),
+                |mut region| {
+                    config.range_check.assign_range_check(
+                        &mut region,
+                        0,
+                        self.output_values[i],
+                        crate::gadgets::RANGE_CHECK_BITS,
+                    )?;
+                    Ok(())
+                },
+            )?;
+        }
+        layouter.assign_region(
+            || "range_check_fee",
+            |mut region| {
+                config.range_check.assign_range_check(
+                    &mut region,
+                    0,
+                    self.fee,
+                    crate::gadgets::RANGE_CHECK_BITS,
+                )?;
+                Ok(())
+            },
+        )?;
+
+        // Region 2: Input commitment derivation + Merkle paths + nullifiers
+        for i in 0..NUM_INPUTS {
             let owner = self.spending_key.map(|sk| pil_primitives::hash::poseidon_hash(sk));
 
-            // Commitment derivation
-            let _commitment_cell = layouter.assign_region(
+            // Commitment derivation — returns (left_cell, right_cell, cm_cell)
+            let (_left_cell, _right_cell, _commitment_cell) = layouter.assign_region(
                 || format!("input_commitment_{i}"),
                 |mut region| {
                     config.input_commitment.assign_commitment(
@@ -213,7 +270,7 @@ impl Circuit<pallas::Base> for TransferCircuit {
                 },
             )?;
 
-            // Nullifier derivation
+            // Compute commitment value for nullifier and Merkle path
             let commitment_val = self.input_values[i].and_then(|v| {
                 owner.and_then(|o| {
                     self.input_asset_ids[i].and_then(|a| {
@@ -226,7 +283,8 @@ impl Circuit<pallas::Base> for TransferCircuit {
                 })
             });
 
-            let nullifier_cell = layouter.assign_region(
+            // Nullifier derivation — returns (inner_cell, nf_cell)
+            let (_inner_cell, nullifier_cell) = layouter.assign_region(
                 || format!("nullifier_{i}"),
                 |mut region| {
                     config.nullifier.assign_nullifier(
@@ -240,7 +298,6 @@ impl Circuit<pallas::Base> for TransferCircuit {
             )?;
 
             // Constrain nullifier to public instance
-            // Instance layout: [root, nf0, nf1, out_cm0, out_cm1]
             layouter.constrain_instance(nullifier_cell.cell(), config.instance, 1 + i)?;
 
             // Merkle path verification
@@ -264,7 +321,7 @@ impl Circuit<pallas::Base> for TransferCircuit {
 
         // Region 3: Output commitment derivation
         for i in 0..NUM_OUTPUTS {
-            let out_cm_cell = layouter.assign_region(
+            let (_left_cell, _right_cell, out_cm_cell) = layouter.assign_region(
                 || format!("output_commitment_{i}"),
                 |mut region| {
                     config.output_commitment.assign_commitment(

@@ -67,9 +67,10 @@ impl WithdrawCircuit {
 #[derive(Debug, Clone)]
 pub struct WithdrawConfig {
     advice: [Column<Advice>; 6],
+    _extra_advice: [Column<Advice>; 4],
     instance: Column<Instance>,
     value_balance_sel: Selector,
-    _range_check: RangeCheckConfig,
+    range_check: RangeCheckConfig,
     merkle_path: MerklePathConfig,
     nullifier: NullifierDerivationConfig,
     input_commitment: CommitmentDerivationConfig,
@@ -93,10 +94,19 @@ impl Circuit<pallas::Base> for WithdrawCircuit {
             meta.advice_column(),
             meta.advice_column(),
         ];
+        let extra_advice: [Column<Advice>; 4] = [
+            meta.advice_column(),
+            meta.advice_column(),
+            meta.advice_column(),
+            meta.advice_column(),
+        ];
         let instance = meta.instance_column();
         let value_balance_sel = meta.selector();
 
         for col in &advice {
+            meta.enable_equality(*col);
+        }
+        for col in &extra_advice {
             meta.enable_equality(*col);
         }
         meta.enable_equality(instance);
@@ -111,26 +121,35 @@ impl Circuit<pallas::Base> for WithdrawCircuit {
             vec![s * (in0 + in1 - out0 - out1)]
         });
 
-        let range_check = RangeCheckConfig::configure(meta, advice[4]);
+        let range_check = RangeCheckConfig::configure(meta, extra_advice[3]);
         let merkle_path = MerklePathConfig::configure(meta, advice[0], advice[1], advice[2]);
-        let nullifier =
-            NullifierDerivationConfig::configure(meta, [advice[0], advice[1], advice[2]], advice[3]);
+        let nullifier = NullifierDerivationConfig::configure(
+            meta,
+            [advice[0], advice[1], advice[2]],
+            advice[3],
+            extra_advice[0],
+        );
         let input_commitment = CommitmentDerivationConfig::configure(
             meta,
             [advice[0], advice[1], advice[2], advice[3]],
             advice[4],
+            extra_advice[1],
+            extra_advice[2],
         );
         let output_commitment = CommitmentDerivationConfig::configure(
             meta,
             [advice[0], advice[1], advice[2], advice[3]],
             advice[5],
+            extra_advice[1],
+            extra_advice[2],
         );
 
         WithdrawConfig {
             advice,
+            _extra_advice: extra_advice,
             instance,
             value_balance_sel,
-            _range_check: range_check,
+            range_check,
             merkle_path,
             nullifier,
             input_commitment,
@@ -158,6 +177,42 @@ impl Circuit<pallas::Base> for WithdrawCircuit {
                 region.assign_advice(|| "out0+exit+fee", config.advice[2], 0, || out0_with_exit)?;
                 region.assign_advice(|| "out1", config.advice[3], 0, || self.output_values[1])?;
 
+                Ok(())
+            },
+        )?;
+
+        // Range checks on all values
+        for i in 0..2 {
+            layouter.assign_region(
+                || format!("range_check_input_{i}"),
+                |mut region| {
+                    config.range_check.assign_range_check(
+                        &mut region, 0, self.input_values[i],
+                        crate::gadgets::RANGE_CHECK_BITS,
+                    )?;
+                    Ok(())
+                },
+            )?;
+        }
+        for i in 0..2 {
+            layouter.assign_region(
+                || format!("range_check_output_{i}"),
+                |mut region| {
+                    config.range_check.assign_range_check(
+                        &mut region, 0, self.output_values[i],
+                        crate::gadgets::RANGE_CHECK_BITS,
+                    )?;
+                    Ok(())
+                },
+            )?;
+        }
+        layouter.assign_region(
+            || "range_check_exit",
+            |mut region| {
+                config.range_check.assign_range_check(
+                    &mut region, 0, self.exit_value,
+                    crate::gadgets::RANGE_CHECK_BITS,
+                )?;
                 Ok(())
             },
         )?;
@@ -194,7 +249,7 @@ impl Circuit<pallas::Base> for WithdrawCircuit {
             )?;
 
             // Nullifier derivation
-            let nullifier_cell = layouter.assign_region(
+            let (_inner_cell, nullifier_cell) = layouter.assign_region(
                 || format!("nullifier_{i}"),
                 |mut region| {
                     config.nullifier.assign_nullifier(
@@ -231,7 +286,7 @@ impl Circuit<pallas::Base> for WithdrawCircuit {
 
         // Region 3: Output commitment derivation
         for i in 0..2 {
-            let out_cm_cell = layouter.assign_region(
+            let (_left_cell, _right_cell, out_cm_cell) = layouter.assign_region(
                 || format!("output_commitment_{i}"),
                 |mut region| {
                     config.output_commitment.assign_commitment(
