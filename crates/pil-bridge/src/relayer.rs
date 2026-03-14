@@ -424,12 +424,22 @@ impl BridgeRelayer {
         );
 
         if attestation.proof.is_empty() {
-            // Dev/test mode: accept empty proofs with a warning
-            tracing::warn!(
-                "No Mithril proof attached for epoch {} — accepting in dev mode",
-                attestation.epoch,
-            );
-            return Ok(());
+            // In production, empty proofs are never acceptable.
+            // Only allow in debug/test builds.
+            #[cfg(debug_assertions)]
+            {
+                tracing::warn!(
+                    "No Mithril proof attached for epoch {} — accepting in debug mode only",
+                    attestation.epoch,
+                );
+                return Ok(());
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                return Err(BridgeError::VerificationFailed(
+                    "empty Mithril proof is not accepted in production".to_string(),
+                ));
+            }
         }
 
         // Validate proof has minimum plausible length
@@ -480,7 +490,7 @@ impl BridgeRelayer {
         let valid_stake: u64 = cert
             .signers
             .iter()
-            .filter(|s| s.verify_commitment(&cert.message))
+            .filter(|s| s.verify_commitment(&cert.message, b"PIL-MITHRIL-SIG"))
             .map(|s| s.stake_weight)
             .sum();
 
@@ -530,11 +540,22 @@ impl BridgeRelayer {
         );
 
         if attestation.proof.is_empty() {
-            tracing::warn!(
-                "No Tendermint proof attached for epoch {} — accepting in dev mode",
-                attestation.epoch,
-            );
-            return Ok(());
+            // In production, empty proofs are never acceptable.
+            // Only allow in debug/test builds.
+            #[cfg(debug_assertions)]
+            {
+                tracing::warn!(
+                    "No Tendermint proof attached for epoch {} — accepting in debug mode only",
+                    attestation.epoch,
+                );
+                return Ok(());
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                return Err(BridgeError::VerificationFailed(
+                    "empty Tendermint proof is not accepted in production".to_string(),
+                ));
+            }
         }
 
         if attestation.proof.len() < Self::MIN_PROOF_LEN {
@@ -585,7 +606,7 @@ impl BridgeRelayer {
         let valid_stake: u64 = cert
             .signers
             .iter()
-            .filter(|s| s.verify_commitment(&cert.message))
+            .filter(|s| s.verify_commitment(&cert.message, b"PIL-TENDERMINT-SIG"))
             .map(|s| s.stake_weight)
             .sum();
 
@@ -975,7 +996,11 @@ pub struct MithrilSigner {
 
 impl MithrilSigner {
     /// Verify that this signer's ed25519 signature is valid for the given message.
-    pub fn verify_commitment(&self, message: &[u8; 32]) -> bool {
+    ///
+    /// `domain_prefix` must be protocol-specific to prevent cross-protocol replay:
+    /// - Mithril: `b"PIL-MITHRIL-SIG"`
+    /// - Tendermint: `b"PIL-TENDERMINT-SIG"`
+    pub fn verify_commitment(&self, message: &[u8; 32], domain_prefix: &[u8]) -> bool {
         use ed25519_dalek::{Signature, VerifyingKey};
 
         let Ok(vk) = VerifyingKey::from_bytes(&self.signer_id) else {
@@ -984,9 +1009,8 @@ impl MithrilSigner {
         let sig = Signature::from_bytes(&self.signature);
 
         // Verify the ed25519 signature over the domain-separated message
-        // Domain: "PIL-MITHRIL-SIG" || message
-        let mut sign_data = Vec::with_capacity(15 + 32);
-        sign_data.extend_from_slice(b"PIL-MITHRIL-SIG");
+        let mut sign_data = Vec::with_capacity(domain_prefix.len() + 32);
+        sign_data.extend_from_slice(domain_prefix);
         sign_data.extend_from_slice(message);
 
         use ed25519_dalek::Verifier;
@@ -999,12 +1023,13 @@ impl MithrilSigner {
         signing_key: &ed25519_dalek::SigningKey,
         stake_weight: u64,
         message: &[u8; 32],
+        domain_prefix: &[u8],
     ) -> Self {
         use ed25519_dalek::Signer;
 
         let signer_id: [u8; 32] = signing_key.verifying_key().to_bytes();
-        let mut sign_data = Vec::with_capacity(15 + 32);
-        sign_data.extend_from_slice(b"PIL-MITHRIL-SIG");
+        let mut sign_data = Vec::with_capacity(domain_prefix.len() + 32);
+        sign_data.extend_from_slice(domain_prefix);
         sign_data.extend_from_slice(message);
         let sig = signing_key.sign(&sign_data);
 
@@ -1350,7 +1375,7 @@ mod tests {
                 seed[0] = i as u8;
                 seed[31] = (i + 1) as u8;
                 let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
-                MithrilSigner::sign_message(&signing_key, 1000, &message)
+                MithrilSigner::sign_message(&signing_key, 1000, &message, b"PIL-MITHRIL-SIG")
             })
             .collect();
 
@@ -1466,10 +1491,10 @@ mod tests {
         // Each has 1000 stake — quorum needs >1500 (3000/2+1)
         // Only 2000 valid stake, so this should pass
         let sk1 = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
-        let signer_valid_1 = MithrilSigner::sign_message(&sk1, 1000, &message);
+        let signer_valid_1 = MithrilSigner::sign_message(&sk1, 1000, &message, b"PIL-MITHRIL-SIG");
 
         let sk2 = ed25519_dalek::SigningKey::from_bytes(&[2u8; 32]);
-        let signer_valid_2 = MithrilSigner::sign_message(&sk2, 1000, &message);
+        let signer_valid_2 = MithrilSigner::sign_message(&sk2, 1000, &message, b"PIL-MITHRIL-SIG");
 
         let sk3 = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
         let signer_invalid = MithrilSigner {
@@ -1498,7 +1523,7 @@ mod tests {
         assert!(relayer.verify_attestation(&att).is_ok());
 
         // Now make it fail: only 1 valid signer (1000/3000 < 50%)
-        let signer_only_valid = MithrilSigner::sign_message(&sk1, 1000, &message);
+        let signer_only_valid = MithrilSigner::sign_message(&sk1, 1000, &message, b"PIL-MITHRIL-SIG");
         let signer_bad_1 = MithrilSigner {
             signer_id: sk2.verifying_key().to_bytes(),
             stake_weight: 1000,
