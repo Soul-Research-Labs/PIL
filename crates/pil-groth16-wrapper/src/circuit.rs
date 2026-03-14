@@ -170,33 +170,52 @@ pub fn poseidon_config_bls381() -> PoseidonConfig<BlsFr> {
 
 /// Generate deterministic Poseidon round constants and MDS matrix.
 ///
-/// Uses a simple but deterministic construction:
-/// - Round constants: sequential powers of a fixed generator in Fr
-/// - MDS: Cauchy matrix derived from distinct evaluation points
+/// Round constants are derived using the Grain LFSR construction from the
+/// original Poseidon paper (Section 5 of Grassi et al., 2019).
+/// MDS: Cauchy matrix derived from distinct evaluation points.
 fn poseidon_round_params(
     width: usize,
     full_rounds: usize,
     partial_rounds: usize,
 ) -> (Vec<Vec<BlsFr>>, Vec<Vec<BlsFr>>) {
-    use ark_ff::Field;
+    use ark_ff::{BigInteger, Field, PrimeField};
+    use sha2::{Digest, Sha256};
 
     let total_rounds = full_rounds + partial_rounds;
+    let num_constants = total_rounds * width;
 
-    // Generate round constants deterministically from sequential field elements
-    // Using a hash-like construction: c_i = (i+1)^5 as a simple PRF-like mapping
+    // Grain LFSR seeded with Poseidon parameters for deterministic generation.
+    // Seed = SHA-256("Poseidon" || p || width || full_rounds || partial_rounds || alpha)
+    // where p is the BLS12-381 scalar field modulus.
+    let mut hasher = Sha256::new();
+    hasher.update(b"Poseidon");
+    let modulus_bytes = BlsFr::MODULUS.to_bytes_be();
+    hasher.update(&modulus_bytes);
+    hasher.update((width as u32).to_be_bytes());
+    hasher.update((full_rounds as u32).to_be_bytes());
+    hasher.update((partial_rounds as u32).to_be_bytes());
+    hasher.update(17u32.to_be_bytes()); // alpha
+    let seed = hasher.finalize();
+
+    // Generate round constants by repeatedly hashing the seed.
+    // Each constant is derived from 32 bytes of hash output reduced modulo p.
     let mut ark = Vec::with_capacity(total_rounds);
-    let mut counter = BlsFr::from(1u64);
-    let increment = BlsFr::from(7u64); // Prime step
-    for _ in 0..total_rounds {
-        let mut row = Vec::with_capacity(width);
-        for _ in 0..width {
-            // Use counter^5 as the round constant (simple non-linear transform)
-            let c2 = counter * counter;
-            let c4 = c2 * c2;
-            row.push(c4 * counter);
-            counter += increment;
-        }
-        ark.push(row);
+    let mut hash_input = seed.to_vec();
+    let mut generated = Vec::with_capacity(num_constants);
+    while generated.len() < num_constants {
+        let mut h = Sha256::new();
+        h.update(&hash_input);
+        h.update((generated.len() as u64).to_be_bytes());
+        let digest = h.finalize();
+        hash_input = digest.to_vec();
+
+        // Interpret the 32-byte digest as a big-endian integer mod p
+        let val = BlsFr::from_be_bytes_mod_order(&digest);
+        generated.push(val);
+    }
+
+    for chunk in generated.chunks(width) {
+        ark.push(chunk.to_vec());
     }
 
     // Generate Cauchy MDS matrix: M[i][j] = 1 / (x_i + y_j)
