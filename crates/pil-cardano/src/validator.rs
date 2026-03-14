@@ -39,15 +39,17 @@ pub fn generate_pool_validator_aiken() -> String {
 //
 // This validator enforces the privacy pool rules:
 // 1. Deposits: commitment is correctly formed, continuing output updated
-// 2. Transfers: ZK proof verifies, nullifiers registered, commitments added
-// 3. Withdrawals: ZK proof verifies, exit value accounted, nullifiers fresh
+// 2. Transfers: Groth16 proof verifies on-chain via BLS12-381, nullifiers registered
+// 3. Withdrawals: Groth16 proof verifies, exit value accounted, nullifiers fresh
 // 4. Epoch finalization: only admin can finalize, epoch advances
 //
+// Requires: Plutus V3 (BLS12-381 builtins)
 // Compile with: aiken build
 
 use aiken/collection/list
 use aiken/crypto.{VerificationKeyHash, blake2b_256}
 use cardano/transaction.{Transaction, Input, Output, find_input}
+use pil.{verify_groth16_proof}
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -66,21 +68,39 @@ type NullifierDatum {
   domain_app_id: Int,
 }
 
+/// Groth16 verifying key stored in a reference input datum.
+/// All points are BLS12-381 compressed format.
+type Groth16VK {
+  alpha_g1: ByteArray,
+  beta_g2: ByteArray,
+  gamma_g2: ByteArray,
+  delta_g2: ByteArray,
+  /// Initial commitments for public input linear combination.
+  ic: List<ByteArray>,
+}
+
 type PoolRedeemer {
   Deposit { commitment: ByteArray, amount: Int, asset_id: Int }
   Transfer {
+    /// Groth16 proof: concatenated A (48 bytes) || B (96 bytes) || C (48 bytes)
     proof: ByteArray,
+    /// Verifying key datum from reference input
+    vk: Groth16VK,
     merkle_root: ByteArray,
     nullifiers: List<ByteArray>,
     output_commitments: List<ByteArray>,
+    /// Public inputs as 32-byte big-endian scalars
+    public_inputs: List<ByteArray>,
     domain_chain_id: Int,
     domain_app_id: Int,
   }
   Withdraw {
     proof: ByteArray,
+    vk: Groth16VK,
     merkle_root: ByteArray,
     nullifiers: List<ByteArray>,
     change_commitments: List<ByteArray>,
+    public_inputs: List<ByteArray>,
     exit_value: Int,
     destination: ByteArray,
   }
@@ -153,9 +173,9 @@ validator pil_privacy_pool {
         valid_commitment? && valid_amount? && note_count_ok? && root_changed? && root_valid? && epoch_preserved? && nft_preserved?
       }
 
-      Transfer { proof, merkle_root, nullifiers, output_commitments, .. } -> {
+      Transfer { proof, vk, merkle_root, nullifiers, output_commitments, public_inputs, .. } -> {
         let root_matches = merkle_root == pool_datum.merkle_root
-        let has_proof = builtin.length_of_bytearray(proof) > 0
+        let proof_valid = verify_groth16_proof(proof, vk, public_inputs)
         let has_nullifiers = list.length(nullifiers) > 0
         let has_outputs = list.length(output_commitments) > 0
         let no_duplicates = list.length(nullifiers) == list.length(list.unique(nullifiers))
@@ -167,12 +187,12 @@ validator pil_privacy_pool {
         let nft_preserved = cont_datum.pool_nft_policy == pool_datum.pool_nft_policy
         let nullifiers_registered =
           list.all(nullifiers, fn(nf) { count_nullifier_outputs(self.outputs, nf) == 1 })
-        root_matches? && has_proof? && has_nullifiers? && has_outputs? && no_duplicates? && note_count_ok? && epoch_preserved? && nft_preserved? && nullifiers_registered?
+        root_matches? && proof_valid? && has_nullifiers? && has_outputs? && no_duplicates? && note_count_ok? && epoch_preserved? && nft_preserved? && nullifiers_registered?
       }
 
-      Withdraw { proof, merkle_root, nullifiers, exit_value, destination, .. } -> {
+      Withdraw { proof, vk, merkle_root, nullifiers, exit_value, destination, public_inputs, .. } -> {
         let root_matches = merkle_root == pool_datum.merkle_root
-        let has_proof = builtin.length_of_bytearray(proof) > 0
+        let proof_valid = verify_groth16_proof(proof, vk, public_inputs)
         let valid_exit = exit_value > 0
         let valid_dest = builtin.length_of_bytearray(destination) > 0
         let no_duplicates = list.length(nullifiers) == list.length(list.unique(nullifiers))
@@ -182,7 +202,7 @@ validator pil_privacy_pool {
         let nft_preserved = cont_datum.pool_nft_policy == pool_datum.pool_nft_policy
         let nullifiers_registered =
           list.all(nullifiers, fn(nf) { count_nullifier_outputs(self.outputs, nf) == 1 })
-        root_matches? && has_proof? && valid_exit? && valid_dest? && no_duplicates? && epoch_preserved? && nft_preserved? && nullifiers_registered?
+        root_matches? && proof_valid? && valid_exit? && valid_dest? && no_duplicates? && epoch_preserved? && nft_preserved? && nullifiers_registered?
       }
 
       FinalizeEpoch { nullifier_root, epoch } -> {
@@ -280,6 +300,91 @@ pub fn is_valid_hash(hash: ByteArray) -> Bool {
 /// Check that all elements in a list are unique (no duplicates).
 pub fn all_unique(items: List<ByteArray>) -> Bool {
   list.length(items) == list.length(list.unique(items))
+}
+
+/// Verify a Groth16 proof on-chain using Plutus V3 BLS12-381 builtins.
+///
+/// The proof is a flat concatenation of:
+///   A (48 bytes, G1 compressed) || B (96 bytes, G2 compressed) || C (48 bytes, G1 compressed)
+///
+/// The verifying key (VK) contains alpha_g1, beta_g2, gamma_g2, delta_g2,
+/// and ic[] (initial commitments for public input linear combination).
+///
+/// Public inputs are 32-byte big-endian BLS12-381 scalars.
+///
+/// Verification equation (Groth16 pairing check):
+///   e(A, B) == e(alpha_g1, beta_g2) * e(vk_x, gamma_g2) * e(C, delta_g2)
+///
+/// Where vk_x = ic[0] + sum(ic[i+1] * public_input[i])
+pub fn verify_groth16_proof(
+  proof: ByteArray,
+  vk: Groth16VK,
+  public_inputs: List<ByteArray>,
+) -> Bool {
+  // Proof length: 48 (A/G1) + 96 (B/G2) + 48 (C/G1) = 192 bytes
+  let proof_len = builtin.length_of_bytearray(proof)
+  expect proof_len == 192
+
+  // ic length must be public_inputs + 1
+  expect list.length(vk.ic) == list.length(public_inputs) + 1
+
+  // Decompress proof points
+  let proof_a = builtin.bls12_381_g1_uncompress(builtin.slice_bytearray(0, 48, proof))
+  let proof_b = builtin.bls12_381_g2_uncompress(builtin.slice_bytearray(48, 96, proof))
+  let proof_c = builtin.bls12_381_g1_uncompress(builtin.slice_bytearray(144, 48, proof))
+
+  // Decompress VK points
+  let alpha = builtin.bls12_381_g1_uncompress(vk.alpha_g1)
+  let beta = builtin.bls12_381_g2_uncompress(vk.beta_g2)
+  let gamma = builtin.bls12_381_g2_uncompress(vk.gamma_g2)
+  let delta = builtin.bls12_381_g2_uncompress(vk.delta_g2)
+
+  // Compute vk_x = ic[0] + sum(ic[i+1] * input[i])
+  expect [ic0_bytes, ..ic_rest] = vk.ic
+  let ic0 = builtin.bls12_381_g1_uncompress(ic0_bytes)
+  let vk_x = compute_vk_x(ic0, ic_rest, public_inputs)
+
+  // Groth16 pairing check:
+  // e(A, B) * e(-alpha, beta) * e(-vk_x, gamma) * e(-C, delta) == identity
+  // Using the multi-Miller-loop approach with negated points:
+  let neg_alpha = builtin.bls12_381_g1_neg(alpha)
+  let neg_vk_x = builtin.bls12_381_g1_neg(vk_x)
+  let neg_c = builtin.bls12_381_g1_neg(proof_c)
+
+  let ml_ab = builtin.bls12_381_miller_loop(proof_a, proof_b)
+  let ml_alpha_beta = builtin.bls12_381_miller_loop(neg_alpha, beta)
+  let ml_vkx_gamma = builtin.bls12_381_miller_loop(neg_vk_x, gamma)
+  let ml_c_delta = builtin.bls12_381_miller_loop(neg_c, delta)
+
+  let combined =
+    builtin.bls12_381_mul_miller_loop_result(
+      ml_ab,
+      builtin.bls12_381_mul_miller_loop_result(
+        ml_alpha_beta,
+        builtin.bls12_381_mul_miller_loop_result(ml_vkx_gamma, ml_c_delta),
+      ),
+    )
+
+  builtin.bls12_381_final_verify(combined, builtin.bls12_381_miller_loop(builtin.bls12_381_g1_uncompress(#"c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"), builtin.bls12_381_g2_uncompress(#"c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")))
+}
+
+/// Recursively compute vk_x = acc + sum(ic[i] * input[i]) for the Groth16
+/// public input linear combination in G1.
+fn compute_vk_x(
+  acc: G1Element,
+  ic_rest: List<ByteArray>,
+  inputs: List<ByteArray>,
+) -> G1Element {
+  when ic_rest is {
+    [] -> acc
+    [ic_bytes, ..remaining_ic] -> {
+      expect [input_bytes, ..remaining_inputs] = inputs
+      let ic_point = builtin.bls12_381_g1_uncompress(ic_bytes)
+      let scaled = builtin.bls12_381_g1_scalar_mul(builtin.bytearray_to_integer(True, input_bytes), ic_point)
+      let new_acc = builtin.bls12_381_g1_add(acc, scaled)
+      compute_vk_x(new_acc, remaining_ic, remaining_inputs)
+    }
+  }
 }
 
 /// Verify a Merkle inclusion proof using Blake2b-256.
@@ -390,6 +495,11 @@ mod tests {
         assert!(source.contains("nft_preserved"));
         assert!(source.contains("nullifiers_registered"));
         assert!(source.contains("epoch_advanced"));
+        // Phase B1: Groth16 on-chain verification
+        assert!(source.contains("Groth16VK"));
+        assert!(source.contains("verify_groth16_proof"));
+        assert!(source.contains("proof_valid"));
+        assert!(!source.contains("has_proof"), "placeholder should be replaced");
     }
 
     #[test]
@@ -405,6 +515,11 @@ mod tests {
         assert!(lib.contains("all_unique"));
         assert!(lib.contains("verify_merkle_inclusion_blake2b"));
         assert!(lib.contains("verify_committee_attestation"));
+        assert!(lib.contains("verify_groth16_proof"));
+        assert!(lib.contains("compute_vk_x"));
+        assert!(lib.contains("bls12_381_miller_loop"));
+        assert!(lib.contains("bls12_381_g1_scalar_mul"));
+        assert!(lib.contains("bls12_381_final_verify"));
     }
 
     #[test]

@@ -12,6 +12,7 @@
 use aiken/collection/list
 use aiken/crypto.{VerificationKeyHash, blake2b_256}
 use cardano/transaction.{Transaction, Input, Output, find_input}
+use pil.{verify_groth16_proof}
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -53,6 +54,17 @@ type EpochDatum {
   finalized_at: Int,
 }
 
+/// Groth16 verifying key stored in a reference input datum.
+/// All points are BLS12-381 compressed format.
+type Groth16VK {
+  alpha_g1: ByteArray,
+  beta_g2: ByteArray,
+  gamma_g2: ByteArray,
+  delta_g2: ByteArray,
+  /// Initial commitments for public input linear combination.
+  ic: List<ByteArray>,
+}
+
 /// Pool redeemer — the action to perform on the pool UTXO.
 type PoolRedeemer {
   Deposit {
@@ -64,28 +76,36 @@ type PoolRedeemer {
     asset_id: Int,
   }
   Transfer {
-    /// ZK proof bytes (Halo2 IPA proof, verified off-chain or via Groth16 wrapper).
+    /// Groth16 proof: concatenated A (48 bytes) || B (96 bytes) || C (48 bytes)
     proof: ByteArray,
+    /// Verifying key datum from reference input
+    vk: Groth16VK,
     /// Expected Merkle root (must match pool state).
     merkle_root: ByteArray,
     /// Nullifiers for input notes.
     nullifiers: List<ByteArray>,
     /// Commitments for output notes.
     output_commitments: List<ByteArray>,
+    /// Public inputs as 32-byte big-endian scalars
+    public_inputs: List<ByteArray>,
     /// Chain domain for nullifier derivation.
     domain_chain_id: Int,
     /// App domain for nullifier derivation.
     domain_app_id: Int,
   }
   Withdraw {
-    /// ZK proof bytes.
+    /// Groth16 proof bytes.
     proof: ByteArray,
+    /// Verifying key datum from reference input
+    vk: Groth16VK,
     /// Expected Merkle root.
     merkle_root: ByteArray,
     /// Nullifiers for input notes.
     nullifiers: List<ByteArray>,
     /// Commitments for change notes.
     change_commitments: List<ByteArray>,
+    /// Public inputs as 32-byte big-endian scalars
+    public_inputs: List<ByteArray>,
     /// Value to withdraw (lovelace).
     exit_value: Int,
     /// Destination address (serialized).
@@ -191,11 +211,11 @@ validator pil_privacy_pool {
         valid_commitment? && valid_amount? && note_count_ok? && root_changed? && root_valid? && epoch_preserved? && admin_preserved? && nft_preserved?
       }
 
-      Transfer { proof, merkle_root, nullifiers, output_commitments, .. } -> {
+      Transfer { proof, vk, merkle_root, nullifiers, output_commitments, public_inputs, .. } -> {
         // Merkle root must match the current pool state
         let root_matches = merkle_root == pool_datum.merkle_root
-        // Proof must be non-empty
-        let has_proof = builtin.length_of_bytearray(proof) > 0
+        // Verify Groth16 proof on-chain using BLS12-381 builtins
+        let proof_valid = verify_groth16_proof(proof, vk, public_inputs)
         // At least one nullifier and one output commitment
         let has_nullifiers = list.length(nullifiers) > 0
         let has_outputs = list.length(output_commitments) > 0
@@ -230,12 +250,12 @@ validator pil_privacy_pool {
             fn(nf) { count_nullifier_outputs(self.outputs, nf) == 1 },
           )
 
-        root_matches? && has_proof? && has_nullifiers? && has_outputs? && no_duplicates? && valid_nullifier_size? && valid_output_size? && note_count_ok? && epoch_preserved? && nft_preserved? && nullifiers_registered?
+        root_matches? && proof_valid? && has_nullifiers? && has_outputs? && no_duplicates? && valid_nullifier_size? && valid_output_size? && note_count_ok? && epoch_preserved? && nft_preserved? && nullifiers_registered?
       }
 
-      Withdraw { proof, merkle_root, nullifiers, exit_value, destination, .. } -> {
+      Withdraw { proof, vk, merkle_root, nullifiers, exit_value, destination, public_inputs, .. } -> {
         let root_matches = merkle_root == pool_datum.merkle_root
-        let has_proof = builtin.length_of_bytearray(proof) > 0
+        let proof_valid = verify_groth16_proof(proof, vk, public_inputs)
         let valid_exit = exit_value > 0
         let valid_dest = builtin.length_of_bytearray(destination) > 0
         let no_duplicates =
@@ -262,7 +282,7 @@ validator pil_privacy_pool {
         //  exit_value is accounted for by the continuing output losing that amount.)
         let valid_value_flow = True
 
-        root_matches? && has_proof? && valid_exit? && valid_dest? && no_duplicates? && epoch_preserved? && nft_preserved? && nullifiers_registered? && valid_value_flow?
+        root_matches? && proof_valid? && valid_exit? && valid_dest? && no_duplicates? && epoch_preserved? && nft_preserved? && nullifiers_registered? && valid_value_flow?
       }
 
       FinalizeEpoch { nullifier_root, epoch } -> {

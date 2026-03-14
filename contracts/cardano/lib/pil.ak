@@ -81,3 +81,106 @@ pub fn verify_committee_attestation(
     )
   matched >= threshold
 }
+
+// ─── Groth16 BLS12-381 On-Chain Verification ────────────────────────
+
+/// Groth16 verifying key type.
+/// All points are BLS12-381 compressed format.
+type Groth16VK {
+  alpha_g1: ByteArray,
+  beta_g2: ByteArray,
+  gamma_g2: ByteArray,
+  delta_g2: ByteArray,
+  ic: List<ByteArray>,
+}
+
+/// Verify a Groth16 proof on-chain using Plutus V3 BLS12-381 builtins.
+///
+/// The proof is a flat concatenation of:
+///   A (48 bytes, G1 compressed) || B (96 bytes, G2 compressed) || C (48 bytes, G1 compressed)
+///
+/// Verification equation (Groth16 pairing check):
+///   e(A, B) == e(alpha_g1, beta_g2) * e(vk_x, gamma_g2) * e(C, delta_g2)
+///
+/// Where vk_x = ic[0] + sum(ic[i+1] * public_input[i])
+pub fn verify_groth16_proof(
+  proof: ByteArray,
+  vk: Groth16VK,
+  public_inputs: List<ByteArray>,
+) -> Bool {
+  // Proof length: 48 (A/G1) + 96 (B/G2) + 48 (C/G1) = 192 bytes
+  let proof_len = builtin.length_of_bytearray(proof)
+  expect proof_len == 192
+
+  // ic length must be public_inputs + 1
+  expect list.length(vk.ic) == list.length(public_inputs) + 1
+
+  // Decompress proof points
+  let proof_a = builtin.bls12_381_g1_uncompress(builtin.slice_bytearray(0, 48, proof))
+  let proof_b = builtin.bls12_381_g2_uncompress(builtin.slice_bytearray(48, 96, proof))
+  let proof_c = builtin.bls12_381_g1_uncompress(builtin.slice_bytearray(144, 48, proof))
+
+  // Decompress VK points
+  let alpha = builtin.bls12_381_g1_uncompress(vk.alpha_g1)
+  let beta = builtin.bls12_381_g2_uncompress(vk.beta_g2)
+  let gamma = builtin.bls12_381_g2_uncompress(vk.gamma_g2)
+  let delta = builtin.bls12_381_g2_uncompress(vk.delta_g2)
+
+  // Compute vk_x = ic[0] + sum(ic[i+1] * input[i])
+  expect [ic0_bytes, ..ic_rest] = vk.ic
+  let ic0 = builtin.bls12_381_g1_uncompress(ic0_bytes)
+  let vk_x = compute_vk_x(ic0, ic_rest, public_inputs)
+
+  // Groth16 pairing check using negated points:
+  // e(A, B) * e(-alpha, beta) * e(-vk_x, gamma) * e(-C, delta) == identity
+  let neg_alpha = builtin.bls12_381_g1_neg(alpha)
+  let neg_vk_x = builtin.bls12_381_g1_neg(vk_x)
+  let neg_c = builtin.bls12_381_g1_neg(proof_c)
+
+  let ml_ab = builtin.bls12_381_miller_loop(proof_a, proof_b)
+  let ml_alpha_beta = builtin.bls12_381_miller_loop(neg_alpha, beta)
+  let ml_vkx_gamma = builtin.bls12_381_miller_loop(neg_vk_x, gamma)
+  let ml_c_delta = builtin.bls12_381_miller_loop(neg_c, delta)
+
+  let combined =
+    builtin.bls12_381_mul_miller_loop_result(
+      ml_ab,
+      builtin.bls12_381_mul_miller_loop_result(
+        ml_alpha_beta,
+        builtin.bls12_381_mul_miller_loop_result(ml_vkx_gamma, ml_c_delta),
+      ),
+    )
+
+  builtin.bls12_381_final_verify(
+    combined,
+    builtin.bls12_381_miller_loop(
+      builtin.bls12_381_g1_uncompress(
+        #"c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      ),
+      builtin.bls12_381_g2_uncompress(
+        #"c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      ),
+    ),
+  )
+}
+
+/// Recursively compute vk_x = acc + sum(ic[i] * input[i]) for Groth16.
+fn compute_vk_x(
+  acc: G1Element,
+  ic_rest: List<ByteArray>,
+  inputs: List<ByteArray>,
+) -> G1Element {
+  when ic_rest is {
+    [] -> acc
+    [ic_bytes, ..remaining_ic] -> {
+      expect [input_bytes, ..remaining_inputs] = inputs
+      let ic_point = builtin.bls12_381_g1_uncompress(ic_bytes)
+      let scaled = builtin.bls12_381_g1_scalar_mul(
+        builtin.bytearray_to_integer(True, input_bytes),
+        ic_point,
+      )
+      let new_acc = builtin.bls12_381_g1_add(acc, scaled)
+      compute_vk_x(new_acc, remaining_ic, remaining_inputs)
+    }
+  }
+}
