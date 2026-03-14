@@ -19,8 +19,9 @@ use pil_primitives::types::{Commitment, Nullifier};
 use pil_prover::ProvingKeys;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use tokio::sync::RwLock;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 
 /// Shared application state backed by real pool + epoch manager.
 pub struct AppState {
@@ -30,6 +31,8 @@ pub struct AppState {
     /// Optional API key for admin endpoints (finalize-epoch).
     /// If None, admin endpoints are open (for testing).
     pub admin_api_key: Option<String>,
+    /// Allowed CORS origins. If empty, no origins are allowed (restrictive).
+    pub allowed_origins: Vec<String>,
 }
 
 impl AppState {
@@ -39,6 +42,7 @@ impl AppState {
             epoch_manager: EpochManager::new(3600),
             proving_keys,
             admin_api_key: None,
+            allowed_origins: Vec::new(),
         }
     }
 
@@ -49,6 +53,7 @@ impl AppState {
             epoch_manager: EpochManager::new(3600),
             proving_keys,
             admin_api_key: Some(api_key),
+            allowed_origins: Vec::new(),
         }
     }
 }
@@ -56,9 +61,9 @@ impl AppState {
 /// Create the Axum router with all PIL endpoints.
 pub fn create_router(state: Arc<RwLock<AppState>>) -> Router {
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+        .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION,
+                        axum::http::HeaderName::from_static("x-api-key")]);
 
     Router::new()
         .route("/health", get(health_handler))
@@ -231,22 +236,19 @@ async fn transfer_handler(
     let proof_bytes = hex::decode(&req.proof_bytes)
         .map_err(|_| AppError::BadRequest("invalid hex in proof_bytes".into()))?;
 
-    // Verify ZK proof before mutating pool state
-    {
-        let s = state.read().await;
-        let public_inputs = build_transfer_public_inputs(&nullifiers, &commitments, s.pool.root());
-        let pi_refs: Vec<&[pil_primitives::types::Base]> =
-            public_inputs.iter().map(|v| v.as_slice()).collect();
-        pil_verifier::verify_transfer(
-            &s.proving_keys.params_transfer,
-            &s.proving_keys.transfer_vk,
-            &proof_bytes,
-            &pi_refs,
-        )
-        .map_err(|e| AppError::BadRequest(format!("proof verification failed: {e}")))?;
-    }
-
+    // Hold write lock for the entire verify+mutate to prevent TOCTOU
     let mut s = state.write().await;
+    let public_inputs = build_transfer_public_inputs(&nullifiers, &commitments, s.pool.root());
+    let pi_refs: Vec<&[pil_primitives::types::Base]> =
+        public_inputs.iter().map(|v| v.as_slice()).collect();
+    pil_verifier::verify_transfer(
+        &s.proving_keys.params_transfer,
+        &s.proving_keys.transfer_vk,
+        &proof_bytes,
+        &pi_refs,
+    )
+    .map_err(|e| AppError::BadRequest(format!("proof verification failed: {e}")))?;
+
     let receipt = s
         .pool
         .process_transfer(&nullifiers, &commitments, &proof_bytes)
@@ -301,23 +303,20 @@ async fn withdraw_handler(
     let proof_bytes = hex::decode(&req.proof_bytes)
         .map_err(|_| AppError::BadRequest("invalid hex in proof_bytes".into()))?;
 
-    // Verify ZK proof before mutating pool state
-    {
-        let s = state.read().await;
-        let public_inputs =
-            build_withdraw_public_inputs(&nullifiers, &change_cms, s.pool.root(), req.exit_value);
-        let pi_refs: Vec<&[pil_primitives::types::Base]> =
-            public_inputs.iter().map(|v| v.as_slice()).collect();
-        pil_verifier::verify_withdraw(
-            &s.proving_keys.params_withdraw,
-            &s.proving_keys.withdraw_vk,
-            &proof_bytes,
-            &pi_refs,
-        )
-        .map_err(|e| AppError::BadRequest(format!("proof verification failed: {e}")))?;
-    }
-
+    // Hold write lock for the entire verify+mutate to prevent TOCTOU
     let mut s = state.write().await;
+    let public_inputs =
+        build_withdraw_public_inputs(&nullifiers, &change_cms, s.pool.root(), req.exit_value);
+    let pi_refs: Vec<&[pil_primitives::types::Base]> =
+        public_inputs.iter().map(|v| v.as_slice()).collect();
+    pil_verifier::verify_withdraw(
+        &s.proving_keys.params_withdraw,
+        &s.proving_keys.withdraw_vk,
+        &proof_bytes,
+        &pi_refs,
+    )
+    .map_err(|e| AppError::BadRequest(format!("proof verification failed: {e}")))?;
+
     let receipt = s
         .pool
         .process_withdraw(
@@ -406,7 +405,7 @@ async fn finalize_epoch_handler(
                 .get("x-api-key")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
-            if provided != expected {
+            if provided.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() != 1 {
                 return Err(AppError::Unauthorized("invalid or missing API key".into()));
             }
         }
