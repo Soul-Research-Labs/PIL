@@ -877,8 +877,8 @@ pub struct MithrilCertificate {
 
 /// Header size: version(1) + epoch(8) + message(32) + timestamp(8) + ttl(4) + num_signers(2) = 55
 const CERT_HEADER_SIZE: usize = 1 + 8 + 32 + 8 + 4 + 2;
-/// Each signer entry: signer_id(32) + stake_weight(8) + commitment(32) = 72
-const SIGNER_ENTRY_SIZE: usize = 32 + 8 + 32;
+/// Each signer entry: signer_pubkey(32) + stake_weight(8) + ed25519_signature(64) = 104
+const SIGNER_ENTRY_SIZE: usize = 32 + 8 + 64;
 
 impl MithrilCertificate {
     /// Current certificate format version.
@@ -923,12 +923,12 @@ impl MithrilCertificate {
             signer_id.copy_from_slice(&data[offset..offset + 32]);
             let stake_weight =
                 u64::from_be_bytes(data[offset + 32..offset + 40].try_into().unwrap());
-            let mut commitment = [0u8; 32];
-            commitment.copy_from_slice(&data[offset + 40..offset + 72]);
+            let mut signature = [0u8; 64];
+            signature.copy_from_slice(&data[offset + 40..offset + 104]);
             signers.push(MithrilSigner {
                 signer_id,
                 stake_weight,
-                commitment,
+                signature,
             });
         }
 
@@ -954,39 +954,65 @@ impl MithrilCertificate {
         for signer in &self.signers {
             buf.extend_from_slice(&signer.signer_id);
             buf.extend_from_slice(&signer.stake_weight.to_be_bytes());
-            buf.extend_from_slice(&signer.commitment);
+            buf.extend_from_slice(&signer.signature);
         }
         buf
     }
 }
 
-/// A Mithril signer (Cardano SPO) with their stake-weighted commitment.
+/// A Mithril signer (Cardano SPO) with their stake-weighted ed25519 signature.
 #[derive(Debug, Clone)]
 pub struct MithrilSigner {
-    /// SPO identifier (hash of their VRF verification key).
+    /// SPO ed25519 public key (32 bytes).
     pub signer_id: [u8; 32],
     /// Stake weight in lovelace.
     pub stake_weight: u64,
-    /// SHA-256 commitment: `H(signer_id || message)`.
-    /// In production this would be an actual STM signature share;
-    /// here we use a deterministic commitment binding for structured verification.
-    pub commitment: [u8; 32],
+    /// ed25519 signature over the certificate message (64 bytes).
+    /// The signer signs the message field of the certificate, which is
+    /// SHA-256("PIL-EPOCH" || epoch_be || nullifier_root).
+    pub signature: [u8; 64],
 }
 
 impl MithrilSigner {
-    /// Verify that this signer's commitment is valid for the given message.
-    /// `commitment == SHA-256(signer_id || message)`
+    /// Verify that this signer's ed25519 signature is valid for the given message.
     pub fn verify_commitment(&self, message: &[u8; 32]) -> bool {
-        let expected = Self::compute_commitment(&self.signer_id, message);
-        self.commitment == expected
+        use ed25519_dalek::{Signature, VerifyingKey};
+
+        let Ok(vk) = VerifyingKey::from_bytes(&self.signer_id) else {
+            return false;
+        };
+        let sig = Signature::from_bytes(&self.signature);
+
+        // Verify the ed25519 signature over the domain-separated message
+        // Domain: "PIL-MITHRIL-SIG" || message
+        let mut sign_data = Vec::with_capacity(15 + 32);
+        sign_data.extend_from_slice(b"PIL-MITHRIL-SIG");
+        sign_data.extend_from_slice(message);
+
+        use ed25519_dalek::Verifier;
+        vk.verify(&sign_data, &sig).is_ok()
     }
 
-    /// Compute the expected commitment for a signer.
-    pub fn compute_commitment(signer_id: &[u8; 32], message: &[u8; 32]) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(signer_id);
-        hasher.update(message);
-        hasher.finalize().into()
+    /// Create a signer with a valid ed25519 signature for testing.
+    #[cfg(test)]
+    pub fn sign_message(
+        signing_key: &ed25519_dalek::SigningKey,
+        stake_weight: u64,
+        message: &[u8; 32],
+    ) -> Self {
+        use ed25519_dalek::Signer;
+
+        let signer_id: [u8; 32] = signing_key.verifying_key().to_bytes();
+        let mut sign_data = Vec::with_capacity(15 + 32);
+        sign_data.extend_from_slice(b"PIL-MITHRIL-SIG");
+        sign_data.extend_from_slice(message);
+        let sig = signing_key.sign(&sign_data);
+
+        Self {
+            signer_id,
+            stake_weight,
+            signature: sig.to_bytes(),
+        }
     }
 }
 
@@ -1319,15 +1345,12 @@ mod tests {
 
         let signers: Vec<MithrilSigner> = (0..num_signers)
             .map(|i| {
-                let mut signer_id = [0u8; 32];
-                signer_id[0] = i as u8;
-                signer_id[31] = (i + 1) as u8;
-                let commitment = MithrilSigner::compute_commitment(&signer_id, &message);
-                MithrilSigner {
-                    signer_id,
-                    stake_weight: 1000,
-                    commitment,
-                }
+                // Generate a deterministic signing key from the index
+                let mut seed = [0u8; 32];
+                seed[0] = i as u8;
+                seed[31] = (i + 1) as u8;
+                let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+                MithrilSigner::sign_message(&signing_key, 1000, &message)
             })
             .collect();
 
@@ -1439,29 +1462,20 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        // Create 3 signers: 2 valid, 1 with bad commitment
+        // Create 3 signers: 2 valid, 1 with bad signature
         // Each has 1000 stake — quorum needs >1500 (3000/2+1)
         // Only 2000 valid stake, so this should pass
-        let mut signer_valid_1 = MithrilSigner {
-            signer_id: [1u8; 32],
-            stake_weight: 1000,
-            commitment: [0u8; 32],
-        };
-        signer_valid_1.commitment =
-            MithrilSigner::compute_commitment(&signer_valid_1.signer_id, &message);
+        let sk1 = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let signer_valid_1 = MithrilSigner::sign_message(&sk1, 1000, &message);
 
-        let mut signer_valid_2 = MithrilSigner {
-            signer_id: [2u8; 32],
-            stake_weight: 1000,
-            commitment: [0u8; 32],
-        };
-        signer_valid_2.commitment =
-            MithrilSigner::compute_commitment(&signer_valid_2.signer_id, &message);
+        let sk2 = ed25519_dalek::SigningKey::from_bytes(&[2u8; 32]);
+        let signer_valid_2 = MithrilSigner::sign_message(&sk2, 1000, &message);
 
+        let sk3 = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
         let signer_invalid = MithrilSigner {
-            signer_id: [3u8; 32],
+            signer_id: sk3.verifying_key().to_bytes(),
             stake_weight: 1000,
-            commitment: [0xFFu8; 32], // Bad commitment
+            signature: [0xFFu8; 64], // Bad signature
         };
 
         let cert = MithrilCertificate {
@@ -1484,20 +1498,16 @@ mod tests {
         assert!(relayer.verify_attestation(&att).is_ok());
 
         // Now make it fail: only 1 valid signer (1000/3000 < 50%)
-        let signer_only_valid = MithrilSigner {
-            signer_id: [1u8; 32],
-            stake_weight: 1000,
-            commitment: MithrilSigner::compute_commitment(&[1u8; 32], &message),
-        };
+        let signer_only_valid = MithrilSigner::sign_message(&sk1, 1000, &message);
         let signer_bad_1 = MithrilSigner {
-            signer_id: [2u8; 32],
+            signer_id: sk2.verifying_key().to_bytes(),
             stake_weight: 1000,
-            commitment: [0xAAu8; 32],
+            signature: [0xAAu8; 64],
         };
         let signer_bad_2 = MithrilSigner {
-            signer_id: [3u8; 32],
+            signer_id: sk3.verifying_key().to_bytes(),
             stake_weight: 1000,
-            commitment: [0xBBu8; 32],
+            signature: [0xBBu8; 64],
         };
 
         let cert_fail = MithrilCertificate {

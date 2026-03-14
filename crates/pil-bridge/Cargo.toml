@@ -20,3 +20,5 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = { workspace = true }
