@@ -6,28 +6,65 @@ use pasta_curves::pallas;
 #[derive(Debug, Clone, Copy)]
 pub struct PedersenCommitment(pub pallas::Point);
 
+/// Derive the independent generator H using a hash-to-curve construction.
+///
+/// Repeatedly hashes an incrementing counter with Blake2b until a valid
+/// Pallas curve point is found that is independent of G. This is a
+/// nothing-up-my-sleeve construction: no party can know the discrete
+/// log relationship between G and H.
+fn h_generator() -> pallas::Point {
+    use blake2::{Blake2b512, Digest};
+    use group::GroupEncoding;
+
+    // Try successive counters until we get a valid point
+    for counter in 0u64.. {
+        let mut hasher = Blake2b512::new();
+        hasher.update(b"PIL_Pedersen_H_HashToCurve_");
+        hasher.update(counter.to_le_bytes());
+        let hash = hasher.finalize();
+
+        // Take first 32 bytes as a candidate compressed point encoding
+        let mut repr = pallas::Affine::default().to_bytes();
+        let len = repr.len();
+        repr.copy_from_slice(&hash[..len]);
+
+        // Attempt to decompress
+        let pt = pallas::Affine::from_bytes(&repr);
+        if bool::from(pt.is_some()) {
+            let point: pallas::Point = pt.unwrap().into();
+            // Ensure it's not the identity
+            if !bool::from(point.is_identity()) {
+                return point;
+            }
+        }
+    }
+
+    // Fallback: multiply G by a deterministic scalar derived from nothing-up-my-sleeve string.
+    // This path is reached only if no valid point is found in 2^64 attempts (practically impossible).
+    use group::Group;
+    let h_scalar = {
+        use blake2::{Blake2b512, Digest};
+        let mut hasher = Blake2b512::new();
+        hasher.update(b"PIL_Pedersen_H_Generator_Fallback");
+        let hash = hasher.finalize();
+        let mut repr = [0u8; 32];
+        repr.copy_from_slice(&hash[..32]);
+        repr[31] &= 0x0f;
+        pallas::Scalar::from_repr(repr).unwrap_or(pallas::Scalar::from(7u64))
+    };
+    pallas::Point::generator() * h_scalar
+}
+
 /// Compute a Pedersen commitment: commit(value, blinding) = value*G + blinding*H.
 ///
-/// Uses the Pallas curve with two independent generator points derived
-/// from nothing-up-my-sleeve constants.
+/// Uses the Pallas curve with two independent generator points.
+/// G is the standard generator; H is derived via hash-to-curve from
+/// a nothing-up-my-sleeve domain tag.
 pub fn pedersen_commit(value: pallas::Scalar, blinding: pallas::Scalar) -> PedersenCommitment {
     use group::Group;
 
     let g = pallas::Point::generator();
-    // H is derived deterministically from hashing "PIL_Pedersen_H" to a curve point.
-    // In production, use a hash-to-curve construction (e.g., SWU map).
-    // For now, we use a simple scalar multiplication of the generator.
-    let h_scalar = {
-        use blake2::{Blake2b512, Digest};
-        let mut hasher = Blake2b512::new();
-        hasher.update(b"PIL_Pedersen_H_Generator");
-        let hash = hasher.finalize();
-        let mut repr = [0u8; 32];
-        repr.copy_from_slice(&hash[..32]);
-        repr[31] &= 0x0f; // Ensure it's in the scalar field
-        pallas::Scalar::from_repr(repr).unwrap_or(pallas::Scalar::from(7u64))
-    };
-    let h = g * h_scalar;
+    let h = h_generator();
 
     PedersenCommitment(g * value + h * blinding)
 }
