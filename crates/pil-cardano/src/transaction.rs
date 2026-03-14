@@ -9,7 +9,17 @@
 use super::datum::{NullifierDatum, PlutusData, PoolDatum};
 use super::utxo::UtxoRef;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use blake2::digest::{Update, VariableOutput};
+use blake2::Blake2bVar;
+
+/// Compute Blake2b-256 hash (Cardano's native hash function).
+fn blake2b_256(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Blake2bVar::new(32).expect("valid output size");
+    hasher.update(data);
+    let mut out = [0u8; 32];
+    hasher.finalize_variable(&mut out).expect("valid output buffer");
+    out
+}
 
 /// Builder for constructing PIL privacy pool transactions on Cardano.
 pub struct CardanoTxBuilder {
@@ -274,7 +284,7 @@ impl CardanoTxBuilder {
         // Key 7: auxiliary data hash (optional)
         if let Some(ref metadata) = self.metadata {
             cbor.write_uint(7);
-            let hash: [u8; 32] = Sha256::digest(metadata).into();
+            let hash: [u8; 32] = blake2b_256(metadata);
             cbor.write_bytes(&hash);
         }
 
@@ -305,10 +315,8 @@ impl CardanoTxBuilder {
 
     /// Compute the transaction hash (Blake2b-256 of the serialized tx body).
     pub fn tx_hash(&self) -> [u8; 32] {
-        // Cardano uses Blake2b-256 for tx hashes.
-        // Here we use SHA-256 as a placeholder since blake2 isn't imported yet.
         let body = self.serialize();
-        Sha256::digest(&body).into()
+        blake2b_256(&body)
     }
 }
 
