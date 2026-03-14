@@ -1,5 +1,6 @@
 use crate::types::Base;
 use ff::{Field, PrimeField};
+use std::sync::OnceLock;
 
 /// Poseidon hash parameters: width=3, rate=2 (P128Pow5T3 equivalent).
 ///
@@ -40,6 +41,20 @@ fn generate_round_constants() -> Vec<Base> {
     constants
 }
 
+/// Cached round constants — computed once and reused across all hash calls.
+static ROUND_CONSTANTS: OnceLock<Vec<Base>> = OnceLock::new();
+
+/// Cached MDS matrix — computed once and reused across all hash calls.
+static MDS_MATRIX: OnceLock<[[Base; POSEIDON_WIDTH]; POSEIDON_WIDTH]> = OnceLock::new();
+
+fn cached_round_constants() -> &'static Vec<Base> {
+    ROUND_CONSTANTS.get_or_init(generate_round_constants)
+}
+
+fn cached_mds_matrix() -> &'static [[Base; POSEIDON_WIDTH]; POSEIDON_WIDTH] {
+    MDS_MATRIX.get_or_init(mds_matrix)
+}
+
 /// S-box: x -> x^5 over the Pallas base field.
 #[inline]
 fn sbox(x: Base) -> Base {
@@ -67,9 +82,9 @@ fn mds_matrix() -> [[Base; POSEIDON_WIDTH]; POSEIDON_WIDTH] {
     m
 }
 
-/// MDS matrix multiplication using Cauchy construction.
+/// MDS matrix multiplication using cached Cauchy construction.
 fn mds_multiply(state: &mut [Base; POSEIDON_WIDTH]) {
-    let m = mds_matrix();
+    let m = cached_mds_matrix();
     let old = *state;
     for i in 0..POSEIDON_WIDTH {
         state[i] = Base::ZERO;
@@ -81,7 +96,7 @@ fn mds_multiply(state: &mut [Base; POSEIDON_WIDTH]) {
 
 /// Poseidon permutation over 3-element state.
 fn poseidon_permutation(state: &mut [Base; POSEIDON_WIDTH]) {
-    let constants = generate_round_constants();
+    let constants = cached_round_constants();
     let mut rc_idx = 0;
 
     // First half of full rounds
