@@ -116,6 +116,12 @@ impl PrivacyPool {
             return Err(PoolError::InsufficientBalance);
         }
 
+        // Check per-asset balance is sufficient
+        let asset_bal = self.asset_balances.get(&asset_id).copied().unwrap_or(0);
+        if asset_bal < exit_value {
+            return Err(PoolError::InsufficientBalance);
+        }
+
         // Insert nullifiers
         for nf in nullifiers {
             self.nullifiers.insert(*nf);
@@ -132,9 +138,8 @@ impl PrivacyPool {
         }
 
         self.pool_balance -= exit_value;
-        if let Some(bal) = self.asset_balances.get_mut(&asset_id) {
-            *bal = bal.saturating_sub(exit_value);
-        }
+        // Safe: we verified asset_bal >= exit_value above
+        *self.asset_balances.get_mut(&asset_id).unwrap() -= exit_value;
 
         Ok(WithdrawReceipt {
             leaf_indices,
