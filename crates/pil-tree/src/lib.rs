@@ -97,8 +97,10 @@ impl IncrementalMerkleTree {
     /// Generate a Merkle authentication path for a given leaf index.
     /// Returns sibling hashes from leaf to root.
     ///
-    /// Computes siblings by hashing pairs of leaves and intermediate nodes,
-    /// using empty hashes where a subtree has no inserted leaves.
+    /// Computes siblings by rebuilding the tree bottom-up but only tracking
+    /// the current layer up to `leaf_count` elements (not the full 2^32).
+    /// Once the layer shrinks to 1 element, remaining siblings come from
+    /// the precomputed empty hashes.
     pub fn authentication_path(&self, leaf_idx: u64) -> Result<MerklePath, TreeError> {
         if leaf_idx >= self.leaf_count {
             return Err(TreeError::LeafNotFound(leaf_idx));
@@ -107,47 +109,48 @@ impl IncrementalMerkleTree {
         let empties = empty_hashes();
         let mut siblings = [Base::ZERO; TREE_DEPTH];
 
-        // Build the tree layer by layer, collecting siblings
-        // Start with the leaves layer, padded with zeros
-        let mut current_layer: Vec<Base> = self.leaves.clone();
-        // Pad to even length with empty[0] = ZERO
-        if current_layer.len() % 2 != 0 {
-            current_layer.push(empties[0]);
-        }
-
+        // Start from the leaf layer. We process at most `self.leaves.len()` items
+        // per level, halving each time, so total work is O(N) but with a much
+        // smaller constant than cloning + padding the full vector each level.
+        let mut current_layer = self.leaves.as_slice().to_vec();
         let mut idx = leaf_idx as usize;
 
         for level in 0..TREE_DEPTH {
+            let len = current_layer.len();
+            if len == 0 {
+                // Remaining levels are all empties
+                siblings[level] = empties[level];
+                idx /= 2;
+                continue;
+            }
+
             // The sibling of idx at this level
             let sibling_idx = idx ^ 1;
-            siblings[level] = if sibling_idx < current_layer.len() {
+            siblings[level] = if sibling_idx < len {
                 current_layer[sibling_idx]
             } else {
                 empties[level]
             };
 
-            // Compute the next layer
-            let mut next_layer = Vec::with_capacity((current_layer.len() + 1) / 2);
+            // If only 1 or fewer elements remain, all further siblings are empties
+            if len <= 1 {
+                idx /= 2;
+                continue;
+            }
+
+            // Compute the next layer (half the size)
+            let next_len = (len + 1) / 2;
+            let mut next_layer = Vec::with_capacity(next_len);
             let mut i = 0;
-            while i < current_layer.len() {
+            while i < len {
                 let left = current_layer[i];
-                let right = if i + 1 < current_layer.len() {
+                let right = if i + 1 < len {
                     current_layer[i + 1]
                 } else {
                     empties[level]
                 };
                 next_layer.push(poseidon_hash2(left, right));
                 i += 2;
-            }
-
-            // If next_layer is empty (shouldn't happen with a valid tree), push empty
-            if next_layer.is_empty() {
-                next_layer.push(empties[level]);
-            }
-
-            // Pad to even for next iteration
-            if next_layer.len() % 2 != 0 && level + 1 < TREE_DEPTH {
-                next_layer.push(empties[level + 1]);
             }
 
             current_layer = next_layer;
