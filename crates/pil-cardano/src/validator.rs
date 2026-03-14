@@ -59,6 +59,8 @@ type PoolDatum {
   current_epoch: Int,
   pool_nft_policy: ByteArray,
   admin_pkh: VerificationKeyHash,
+  vk_hash: ByteArray,
+  nullifier_registry_hash: ByteArray,
 }
 
 type NullifierDatum {

@@ -26,6 +26,12 @@ pub struct PoolDatum {
     pub pool_nft_policy: [u8; 28],
     /// Admin public key hash (for governance operations).
     pub admin_pkh: [u8; 28],
+    /// Blake2b-256 hash of the canonical Groth16 verifying key.
+    /// Prevents attackers from supplying a malicious VK in the redeemer.
+    pub vk_hash: [u8; 32],
+    /// Script hash of the nullifier registry validator.
+    /// Used to validate nullifier outputs are sent to the correct address.
+    pub nullifier_registry_hash: [u8; 28],
 }
 
 impl PoolDatum {
@@ -39,6 +45,8 @@ impl PoolDatum {
                 PlutusData::Integer(self.current_epoch as i128),
                 PlutusData::Bytes(self.pool_nft_policy.to_vec()),
                 PlutusData::Bytes(self.admin_pkh.to_vec()),
+                PlutusData::Bytes(self.vk_hash.to_vec()),
+                PlutusData::Bytes(self.nullifier_registry_hash.to_vec()),
             ],
         }
     }
@@ -179,6 +187,8 @@ mod tests {
             current_epoch: 5,
             pool_nft_policy: [0xCD; 28],
             admin_pkh: [0xEF; 28],
+            vk_hash: [0x11; 32],
+            nullifier_registry_hash: [0x22; 28],
         };
         let plutus = datum.to_plutus_data();
         let cbor = plutus.to_cbor();

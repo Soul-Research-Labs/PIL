@@ -341,6 +341,8 @@ mod tests {
             current_epoch: 3,
             pool_nft_policy: [0xBB; 28],
             admin_pkh: [0xCC; 28],
+            vk_hash: [0x00; 32],
+            nullifier_registry_hash: [0xDD; 28],
         }
     }
 

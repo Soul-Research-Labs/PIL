@@ -11,6 +11,7 @@
 
 use aiken/collection/list
 use aiken/crypto.{VerificationKeyHash, blake2b_256}
+use cardano/address.{Credential, Script as ScriptCredential}
 use cardano/transaction.{Transaction, Input, Output, find_input}
 use cardano/value
 use pil.{verify_groth16_proof}
@@ -30,6 +31,12 @@ type PoolDatum {
   pool_nft_policy: ByteArray,
   /// Admin public key hash (for epoch finalization).
   admin_pkh: VerificationKeyHash,
+  /// Blake2b-256 hash of the canonical Groth16 verifying key.
+  /// Prevents attackers from supplying a malicious VK in the redeemer.
+  vk_hash: ByteArray,
+  /// Script hash of the nullifier registry validator.
+  /// Used to validate nullifier outputs are sent to the correct address.
+  nullifier_registry_hash: ByteArray,
 }
 
 /// Nullifier datum — stored in individual nullifier UTXOs.
@@ -145,10 +152,35 @@ fn find_continuing_output(
   }
 }
 
-/// Count occurrences of a nullifier hash in the outputs.
+/// Hash a Groth16 verifying key to a canonical 32-byte digest.
+/// Used to verify the redeemer-supplied VK matches the pool's committed VK.
+fn hash_groth16_vk(vk: Groth16VK) -> ByteArray {
+  let ic_concat =
+    list.foldl(
+      vk.ic,
+      #"",
+      fn(point, acc) { builtin.append_bytearray(acc, point) },
+    )
+  let preimage =
+    builtin.append_bytearray(
+      builtin.append_bytearray(
+        builtin.append_bytearray(
+          builtin.append_bytearray(vk.alpha_g1, vk.beta_g2),
+          vk.gamma_g2,
+        ),
+        vk.delta_g2,
+      ),
+      ic_concat,
+    )
+  blake2b_256(preimage)
+}
+
+/// Count occurrences of a nullifier hash in the outputs,
+/// ensuring each is sent to the expected nullifier registry address.
 fn count_nullifier_outputs(
   outputs: List<Output>,
   target_hash: ByteArray,
+  registry_address: ByteArray,
 ) -> Int {
   list.foldl(
     outputs,
@@ -157,7 +189,7 @@ fn count_nullifier_outputs(
       when output.datum is {
         InlineDatum(data) -> {
           expect nf: NullifierDatum = data
-          if nf.nullifier_hash == target_hash {
+          if nf.nullifier_hash == target_hash && output.address.payment_credential == ScriptCredential(registry_address) {
             acc + 1
           } else {
             acc
@@ -202,6 +234,8 @@ validator pil_privacy_pool {
         let admin_preserved = cont_datum.admin_pkh == pool_datum.admin_pkh
         // Pool NFT policy must be preserved
         let nft_preserved = cont_datum.pool_nft_policy == pool_datum.pool_nft_policy
+        let vk_preserved = cont_datum.vk_hash == pool_datum.vk_hash
+        let registry_preserved = cont_datum.nullifier_registry_hash == pool_datum.nullifier_registry_hash
 
         // Deposit must increase the pool's ADA value by at least the declared amount
         let pool_input = input.output
@@ -209,10 +243,12 @@ validator pil_privacy_pool {
         let output_lovelace = value.lovelace_of(cont_output.value)
         let value_increased = output_lovelace >= input_lovelace + amount
 
-        valid_commitment? && valid_amount? && note_count_ok? && root_changed? && root_valid? && epoch_preserved? && admin_preserved? && nft_preserved? && value_increased?
+        valid_commitment? && valid_amount? && note_count_ok? && root_changed? && root_valid? && epoch_preserved? && admin_preserved? && nft_preserved? && vk_preserved? && registry_preserved? && value_increased?
       }
 
       Transfer { proof, vk, merkle_root, nullifiers, output_commitments, public_inputs, .. } -> {
+        // Verify VK integrity: redeemer VK must match the committed vk_hash
+        let vk_trusted = hash_groth16_vk(vk) == pool_datum.vk_hash
         // Merkle root must match the current pool state
         let root_matches = merkle_root == pool_datum.merkle_root
         // Verify Groth16 proof on-chain using BLS12-381 builtins
@@ -244,18 +280,22 @@ validator pil_privacy_pool {
         let epoch_preserved = cont_datum.current_epoch == pool_datum.current_epoch
         let admin_preserved = cont_datum.admin_pkh == pool_datum.admin_pkh
         let nft_preserved = cont_datum.pool_nft_policy == pool_datum.pool_nft_policy
+        let vk_preserved = cont_datum.vk_hash == pool_datum.vk_hash
+        let registry_preserved = cont_datum.nullifier_registry_hash == pool_datum.nullifier_registry_hash
 
         // Each nullifier must appear as a nullifier registry output (uniqueness on-chain)
         let nullifiers_registered =
           list.all(
             nullifiers,
-            fn(nf) { count_nullifier_outputs(self.outputs, nf) == 1 },
+            fn(nf) { count_nullifier_outputs(self.outputs, nf, pool_datum.nullifier_registry_hash) == 1 },
           )
 
-        root_matches? && proof_valid? && has_nullifiers? && has_outputs? && no_duplicates? && valid_nullifier_size? && valid_output_size? && note_count_ok? && epoch_preserved? && admin_preserved? && nft_preserved? && nullifiers_registered?
+        vk_trusted? && root_matches? && proof_valid? && has_nullifiers? && has_outputs? && no_duplicates? && valid_nullifier_size? && valid_output_size? && note_count_ok? && epoch_preserved? && admin_preserved? && nft_preserved? && vk_preserved? && registry_preserved? && nullifiers_registered?
       }
 
       Withdraw { proof, vk, merkle_root, nullifiers, exit_value, destination, public_inputs, .. } -> {
+        // Verify VK integrity: redeemer VK must match the committed vk_hash
+        let vk_trusted = hash_groth16_vk(vk) == pool_datum.vk_hash
         let root_matches = merkle_root == pool_datum.merkle_root
         let proof_valid = verify_groth16_proof(proof, vk, public_inputs)
         let valid_exit = exit_value > 0
@@ -271,12 +311,14 @@ validator pil_privacy_pool {
         let epoch_preserved = cont_datum.current_epoch == pool_datum.current_epoch
         let admin_preserved = cont_datum.admin_pkh == pool_datum.admin_pkh
         let nft_preserved = cont_datum.pool_nft_policy == pool_datum.pool_nft_policy
+        let vk_preserved = cont_datum.vk_hash == pool_datum.vk_hash
+        let registry_preserved = cont_datum.nullifier_registry_hash == pool_datum.nullifier_registry_hash
 
         // Each nullifier must be registered as output
         let nullifiers_registered =
           list.all(
             nullifiers,
-            fn(nf) { count_nullifier_outputs(self.outputs, nf) == 1 },
+            fn(nf) { count_nullifier_outputs(self.outputs, nf, pool_datum.nullifier_registry_hash) == 1 },
           )
 
         // Verify value flow: the pool must lose exactly exit_value lovelace.
@@ -286,7 +328,7 @@ validator pil_privacy_pool {
         let output_lovelace = value.lovelace_of(cont_output.value)
         let valid_value_flow = input_lovelace - exit_value == output_lovelace
 
-        root_matches? && proof_valid? && valid_exit? && valid_dest? && no_duplicates? && epoch_preserved? && admin_preserved? && nft_preserved? && nullifiers_registered? && valid_value_flow?
+        vk_trusted? && root_matches? && proof_valid? && valid_exit? && valid_dest? && no_duplicates? && epoch_preserved? && admin_preserved? && nft_preserved? && vk_preserved? && registry_preserved? && nullifiers_registered? && valid_value_flow?
       }
 
       FinalizeEpoch { nullifier_root, epoch } -> {
@@ -306,8 +348,10 @@ validator pil_privacy_pool {
         let root_preserved = cont_datum.merkle_root == pool_datum.merkle_root
         let count_preserved = cont_datum.note_count == pool_datum.note_count
         let nft_preserved = cont_datum.pool_nft_policy == pool_datum.pool_nft_policy
+        let vk_preserved = cont_datum.vk_hash == pool_datum.vk_hash
+        let registry_preserved = cont_datum.nullifier_registry_hash == pool_datum.nullifier_registry_hash
 
-        is_admin? && correct_epoch? && valid_root? && epoch_advanced? && root_preserved? && count_preserved? && nft_preserved?
+        is_admin? && correct_epoch? && valid_root? && epoch_advanced? && root_preserved? && count_preserved? && nft_preserved? && vk_preserved? && registry_preserved?
       }
     }
   }
