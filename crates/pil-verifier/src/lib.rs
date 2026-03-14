@@ -44,6 +44,22 @@ pub fn verify_withdraw(
     Ok(())
 }
 
+/// Verify a wealth proof.
+pub fn verify_wealth(
+    params: &Params<vesta::Affine>,
+    vk: &VerifyingKey<vesta::Affine>,
+    proof_bytes: &[u8],
+    public_inputs: &[&[pallas::Base]],
+) -> Result<(), VerifierError> {
+    let strategy = SingleVerifier::new(params);
+    let mut transcript = Blake2bRead::<_, vesta::Affine, Challenge255<_>>::init(proof_bytes);
+
+    verify_proof(params, vk, strategy, &[public_inputs], &mut transcript)
+        .map_err(|e| VerifierError::InvalidProof(format!("wealth: {e}")))?;
+
+    Ok(())
+}
+
 /// Batch-verify multiple proofs (amortized cost per proof is lower).
 pub fn batch_verify(
     params: &Params<vesta::Affine>,

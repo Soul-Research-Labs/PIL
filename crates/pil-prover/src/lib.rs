@@ -15,7 +15,11 @@ use halo2_proofs::{
     transcript::{Blake2bWrite, Challenge255},
 };
 use pasta_curves::{pallas, vesta};
-use pil_circuits::{transfer::TransferCircuit, withdraw::WithdrawCircuit};
+use pil_circuits::{
+    transfer::TransferCircuit,
+    wealth::WealthProofCircuit,
+    withdraw::WithdrawCircuit,
+};
 use rand::rngs::OsRng;
 
 /// Proving keys for all PIL circuit types.
@@ -24,8 +28,11 @@ pub struct ProvingKeys {
     pub transfer_vk: VerifyingKey<vesta::Affine>,
     pub withdraw_pk: ProvingKey<vesta::Affine>,
     pub withdraw_vk: VerifyingKey<vesta::Affine>,
+    pub wealth_pk: ProvingKey<vesta::Affine>,
+    pub wealth_vk: VerifyingKey<vesta::Affine>,
     pub params_transfer: Params<vesta::Affine>,
     pub params_withdraw: Params<vesta::Affine>,
+    pub params_wealth: Params<vesta::Affine>,
 }
 
 impl ProvingKeys {
@@ -49,6 +56,14 @@ impl ProvingKeys {
         let withdraw_pk = keygen_pk(&params_withdraw, withdraw_vk.clone(), &withdraw_empty)
             .map_err(|e| ProverError::Setup(format!("withdraw pk: {e}")))?;
 
+        // Wealth proof circuit setup
+        let params_wealth = Params::<vesta::Affine>::new(pil_circuits::wealth::WEALTH_K);
+        let wealth_empty = WealthProofCircuit::empty(pil_circuits::wealth::MAX_WEALTH_NOTES);
+        let wealth_vk = keygen_vk(&params_wealth, &wealth_empty)
+            .map_err(|e| ProverError::Setup(format!("wealth vk: {e}")))?;
+        let wealth_pk = keygen_pk(&params_wealth, wealth_vk.clone(), &wealth_empty)
+            .map_err(|e| ProverError::Setup(format!("wealth pk: {e}")))?;
+
         tracing::info!("PIL proving keys generated successfully");
 
         Ok(Self {
@@ -56,8 +71,11 @@ impl ProvingKeys {
             transfer_vk,
             withdraw_pk,
             withdraw_vk,
+            wealth_pk,
+            wealth_vk,
             params_transfer,
             params_withdraw,
+            params_wealth,
         })
     }
 
@@ -84,14 +102,21 @@ impl ProvingKeys {
             .write(&mut f)
             .map_err(|e| ProverError::Io(format!("write withdraw params: {e}")))?;
 
+        let wealth_path = dir.join("wealth_params.bin");
+        let mut f = std::fs::File::create(&wealth_path)
+            .map_err(|e| ProverError::Io(format!("create {}: {e}", wealth_path.display())))?;
+        self.params_wealth
+            .write(&mut f)
+            .map_err(|e| ProverError::Io(format!("write wealth params: {e}")))?;
+
         tracing::info!("Saved params to {}", dir.display());
         Ok(())
     }
 
     /// Load params from a directory and regenerate PK/VK.
     ///
-    /// Reads `transfer_params.bin` and `withdraw_params.bin`, then runs
-    /// keygen (deterministic from params) to recover PK/VK.
+    /// Reads `transfer_params.bin`, `withdraw_params.bin`, and `wealth_params.bin`,
+    /// then runs keygen (deterministic from params) to recover PK/VK.
     pub fn load_params(dir: &std::path::Path) -> Result<Self, ProverError> {
         let transfer_path = dir.join("transfer_params.bin");
         let mut f = std::fs::File::open(&transfer_path)
@@ -105,13 +130,20 @@ impl ProvingKeys {
         let params_withdraw = Params::<vesta::Affine>::read(&mut f)
             .map_err(|e| ProverError::Io(format!("read withdraw params: {e}")))?;
 
-        Self::from_params(params_transfer, params_withdraw)
+        let wealth_path = dir.join("wealth_params.bin");
+        let mut f = std::fs::File::open(&wealth_path)
+            .map_err(|e| ProverError::Io(format!("open {}: {e}", wealth_path.display())))?;
+        let params_wealth = Params::<vesta::Affine>::read(&mut f)
+            .map_err(|e| ProverError::Io(format!("read wealth params: {e}")))?;
+
+        Self::from_params(params_transfer, params_withdraw, params_wealth)
     }
 
     /// Regenerate PK/VK from pre-existing Params.
     fn from_params(
         params_transfer: Params<vesta::Affine>,
         params_withdraw: Params<vesta::Affine>,
+        params_wealth: Params<vesta::Affine>,
     ) -> Result<Self, ProverError> {
         tracing::info!("Regenerating PK/VK from loaded params...");
 
@@ -127,6 +159,12 @@ impl ProvingKeys {
         let withdraw_pk = keygen_pk(&params_withdraw, withdraw_vk.clone(), &withdraw_empty)
             .map_err(|e| ProverError::Setup(format!("withdraw pk: {e}")))?;
 
+        let wealth_empty = WealthProofCircuit::empty(pil_circuits::wealth::MAX_WEALTH_NOTES);
+        let wealth_vk = keygen_vk(&params_wealth, &wealth_empty)
+            .map_err(|e| ProverError::Setup(format!("wealth vk: {e}")))?;
+        let wealth_pk = keygen_pk(&params_wealth, wealth_vk.clone(), &wealth_empty)
+            .map_err(|e| ProverError::Setup(format!("wealth pk: {e}")))?;
+
         tracing::info!("PK/VK regenerated from params");
 
         Ok(Self {
@@ -134,8 +172,11 @@ impl ProvingKeys {
             transfer_vk,
             withdraw_pk,
             withdraw_vk,
+            wealth_pk,
+            wealth_vk,
             params_transfer,
             params_withdraw,
+            params_wealth,
         })
     }
 }
@@ -182,6 +223,27 @@ pub fn prove_withdraw(
     Ok(transcript.finalize())
 }
 
+/// Generate a wealth proof.
+pub fn prove_wealth(
+    keys: &ProvingKeys,
+    circuit: WealthProofCircuit,
+    public_inputs: &[&[pallas::Base]],
+) -> Result<Vec<u8>, ProverError> {
+    let mut transcript = Blake2bWrite::<_, vesta::Affine, Challenge255<_>>::init(vec![]);
+
+    create_proof(
+        &keys.params_wealth,
+        &keys.wealth_pk,
+        &[circuit],
+        &[public_inputs],
+        OsRng,
+        &mut transcript,
+    )
+    .map_err(|e| ProverError::ProofGeneration(format!("wealth: {e}")))?;
+
+    Ok(transcript.finalize())
+}
+
 /// Async proof generation wrapper for non-blocking server contexts.
 pub async fn prove_transfer_async(
     keys: std::sync::Arc<ProvingKeys>,
@@ -205,6 +267,20 @@ pub async fn prove_withdraw_async(
     tokio::task::spawn_blocking(move || {
         let pi_refs: Vec<&[pallas::Base]> = public_inputs.iter().map(|v| v.as_slice()).collect();
         prove_withdraw(&keys, circuit, &pi_refs)
+    })
+    .await
+    .map_err(|e| ProverError::ProofGeneration(format!("async join: {e}")))?
+}
+
+/// Async wealth proof generation wrapper.
+pub async fn prove_wealth_async(
+    keys: std::sync::Arc<ProvingKeys>,
+    circuit: WealthProofCircuit,
+    public_inputs: Vec<Vec<pallas::Base>>,
+) -> Result<Vec<u8>, ProverError> {
+    tokio::task::spawn_blocking(move || {
+        let pi_refs: Vec<&[pallas::Base]> = public_inputs.iter().map(|v| v.as_slice()).collect();
+        prove_wealth(&keys, circuit, &pi_refs)
     })
     .await
     .map_err(|e| ProverError::ProofGeneration(format!("async join: {e}")))?
@@ -278,6 +354,7 @@ mod tests {
         keys.save_params(&dir).unwrap();
         assert!(dir.join("transfer_params.bin").exists());
         assert!(dir.join("withdraw_params.bin").exists());
+        assert!(dir.join("wealth_params.bin").exists());
 
         // Verify we can load params and regenerate PK/VK without error
         let _loaded = ProvingKeys::load_params(&dir).unwrap();
