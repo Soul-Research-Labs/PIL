@@ -17,3 +17,4 @@ export {
 export { type Proof, type ProofRequest, type ProverBackend } from "./prover.js";
 export { ChainDomain, domainTag } from "./domain.js";
 export { bytesToHex, hexToBytes, randomBytes, concatBytes } from "./utils.js";
+export { poseidonHash, poseidonHash2 } from "./poseidon.js";

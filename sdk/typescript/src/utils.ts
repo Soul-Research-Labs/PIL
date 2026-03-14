@@ -1,4 +1,5 @@
 import { randomBytes as nodeRandomBytes, createHash } from "node:crypto";
+import { poseidonHash } from "./poseidon.js";
 
 /** Convert a Uint8Array to a hex string. */
 export function bytesToHex(bytes: Uint8Array): string {
@@ -36,9 +37,17 @@ export function concatBytes(...arrays: Uint8Array[]): Uint8Array {
   return result;
 }
 
-/** SHA-256 hash. */
+/** SHA-256 hash (used for non-ZK contexts like Cardano transaction hashing). */
 export function sha256(data: Uint8Array): Uint8Array {
   const hash = createHash("sha256");
   hash.update(data);
   return new Uint8Array(hash.digest());
 }
+
+/**
+ * Poseidon hash over arbitrary bytes.
+ * ZK-friendly hash used for note commitments, nullifiers, and Merkle trees.
+ * Compatible with the Poseidon parameters used in PIL's Halo2 circuits.
+ */
+export { poseidonHash } from "./poseidon.js";
+export { poseidonHash2 } from "./poseidon.js";

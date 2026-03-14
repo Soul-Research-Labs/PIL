@@ -2,9 +2,9 @@ import {
   bytesToHex,
   hexToBytes,
   randomBytes,
-  sha256,
   concatBytes,
 } from "./utils.js";
+import { poseidonHash } from "./poseidon.js";
 import { domainTag, ChainDomain } from "./domain.js";
 
 /** Parameters to create a new shielded note. */
@@ -40,8 +40,8 @@ export interface NoteData {
 /**
  * Manages creation and derivation of shielded notes.
  *
- * In production the commitment would use Poseidon over the Pallas field;
- * here we use SHA-256 as a stand-in so the SDK can run without WASM bindings.
+ * Uses Poseidon hashing for ZK-friendly commitments and nullifier derivation.
+ * Poseidon is compatible with the Halo2 circuits used for proof generation.
  */
 export class NoteManager {
   /**
@@ -54,14 +54,14 @@ export class NoteManager {
     const valueBuf = new Uint8Array(8);
     new DataView(valueBuf.buffer).setBigUint64(0, params.value, true);
 
-    // commitment = H(owner || value || blinding || domain)
+    // commitment = Poseidon(owner || value || blinding || domain)
     const domain = domainTag(params.chain, params.appId);
     const preimage = concatBytes(ownerBytes, valueBuf, blinding, domain);
-    const commitment = sha256(preimage);
+    const commitment = poseidonHash(preimage);
 
-    // nullifier_key = H(owner || blinding)
+    // nullifier_key = Poseidon(owner || blinding)
     const nkPreimage = concatBytes(ownerBytes, blinding);
-    const nullifierKey = sha256(nkPreimage);
+    const nullifierKey = poseidonHash(nkPreimage);
 
     return {
       commitment: bytesToHex(commitment),
@@ -76,7 +76,7 @@ export class NoteManager {
 
   /**
    * Derive the nullifier for a note given its key material and leaf index.
-   * nullifier = H(nullifier_key || leaf_index || domain)
+   * nullifier = Poseidon(nullifier_key || leaf_index || domain)
    */
   static deriveNullifier(
     nullifierKey: string,
@@ -90,6 +90,6 @@ export class NoteManager {
     const domain = domainTag(chain, appId);
 
     const preimage = concatBytes(nkBytes, idxBuf, domain);
-    return bytesToHex(sha256(preimage));
+    return bytesToHex(poseidonHash(preimage));
   }
 }
