@@ -1,5 +1,6 @@
 use ff::Field;
 use pil_primitives::{hash::poseidon_hash2, types::Base};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Epoch-based nullifier partitioning for cross-chain synchronization.
 ///
@@ -13,9 +14,16 @@ pub struct EpochManager {
     /// Finalized epoch roots (epoch_number → nullifier Merkle root).
     finalized_roots: Vec<(u64, Base)>,
     /// Epoch duration in seconds (default: 3600 = 1 hour).
-    _epoch_duration_secs: u64,
-    /// Timestamp of current epoch start.
-    _epoch_start: u64,
+    epoch_duration_secs: u64,
+    /// Unix timestamp of current epoch start.
+    epoch_start: u64,
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 impl EpochManager {
@@ -23,17 +31,38 @@ impl EpochManager {
         Self {
             current_epoch: 0,
             finalized_roots: Vec::new(),
-            _epoch_duration_secs: epoch_duration_secs,
-            _epoch_start: 0,
+            epoch_duration_secs,
+            epoch_start: unix_now(),
         }
     }
 
-    /// Finalize the current epoch with a nullifier root and advance to the next.
+    /// Check whether the current epoch has exceeded its duration and should be finalized.
+    pub fn should_finalize(&self) -> bool {
+        unix_now().saturating_sub(self.epoch_start) >= self.epoch_duration_secs
+    }
+
+    /// Finalize the current epoch with a Merkle root and advance to the next.
     pub fn finalize_epoch(&mut self, nullifier_root: Base) {
         self.finalized_roots
             .push((self.current_epoch, nullifier_root));
         self.current_epoch += 1;
-        // In production: self.epoch_start = current_timestamp();
+        self.epoch_start = unix_now();
+    }
+
+    /// Configured epoch duration.
+    pub fn epoch_duration_secs(&self) -> u64 {
+        self.epoch_duration_secs
+    }
+
+    /// Unix timestamp when the current epoch started.
+    pub fn epoch_start(&self) -> u64 {
+        self.epoch_start
+    }
+
+    /// Seconds remaining in the current epoch (0 if overdue).
+    pub fn time_remaining(&self) -> u64 {
+        let elapsed = unix_now().saturating_sub(self.epoch_start);
+        self.epoch_duration_secs.saturating_sub(elapsed)
     }
 
     /// Get the finalized root for a specific epoch.

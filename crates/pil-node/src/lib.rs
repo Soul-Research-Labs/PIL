@@ -229,26 +229,43 @@ impl PilNode {
                         for tx in pending {
                             match tx {
                                 PendingTx::Deposit { commitment, value, asset_id } => {
-                                    let _ = p.deposit(commitment, value, asset_id);
+                                    if let Err(e) = p.deposit(commitment, value, asset_id) {
+                                        tracing::error!("Deposit failed: {e}");
+                                    }
                                 }
                                 PendingTx::Transfer { nullifiers, new_commitments } => {
-                                    let _ = p.process_transfer(&nullifiers, &new_commitments, &[]);
+                                    if let Err(e) = p.process_transfer(&nullifiers, &new_commitments, &[]) {
+                                        tracing::error!("Transfer failed: {e}");
+                                    }
                                 }
                                 PendingTx::Withdraw { nullifiers, change_commitments, exit_value, asset_id } => {
-                                    let _ = p.process_withdraw(&nullifiers, &change_commitments, exit_value, asset_id, &[]);
+                                    if let Err(e) = p.process_withdraw(&nullifiers, &change_commitments, exit_value, asset_id, &[]) {
+                                        tracing::error!("Withdraw failed: {e}");
+                                    }
                                 }
                             }
                         }
                     }
                 }
                 _ = epoch_tick.tick() => {
+                    let em = epoch_mgr.read().await;
+                    if !em.should_finalize() {
+                        continue;
+                    }
+                    drop(em);
+
                     let root = {
                         let p = pool.read().await;
                         p.root()
                     };
                     let mut em = epoch_mgr.write().await;
+                    let epoch = em.current_epoch();
                     em.finalize_epoch(root);
-                    tracing::info!("Epoch {} finalized", em.current_epoch() - 1);
+                    tracing::info!(
+                        "Epoch {epoch} finalized (root: {:?}, remaining: {}s)",
+                        root,
+                        em.time_remaining()
+                    );
                 }
                 _ = rx.recv() => {
                     tracing::info!("Shutdown signal received, stopping daemon");
