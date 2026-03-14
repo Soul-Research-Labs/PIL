@@ -6,7 +6,7 @@
 //! Uses `vesta::Affine` as commitment curve (matching the prover).
 
 use halo2_proofs::{
-    plonk::{verify_proof, SingleVerifier, VerifyingKey},
+    plonk::{verify_proof, BatchVerifier, SingleVerifier, VerifyingKey},
     poly::commitment::Params,
     transcript::{Blake2bRead, Challenge255},
 };
@@ -60,22 +60,37 @@ pub fn verify_wealth(
     Ok(())
 }
 
-/// Batch-verify multiple proofs (amortized cost per proof is lower).
+/// Batch-verify multiple proofs using amortized multi-scalar multiplication.
+///
+/// Accumulates all proof MSMs into a single check, which is significantly
+/// faster than verifying each proof individually when the batch is large.
+/// Returns an error if any proof in the batch is invalid; to identify which
+/// specific proof failed, the caller must re-verify proofs individually.
 pub fn batch_verify(
     params: &Params<vesta::Affine>,
     vk: &VerifyingKey<vesta::Affine>,
     proofs: &[(Vec<u8>, Vec<Vec<pallas::Base>>)],
 ) -> Result<(), VerifierError> {
-    for (i, (proof_bytes, pi)) in proofs.iter().enumerate() {
-        let pi_refs: Vec<&[pallas::Base]> = pi.iter().map(|v| v.as_slice()).collect();
-        let strategy = SingleVerifier::new(params);
-        let mut transcript =
-            Blake2bRead::<_, vesta::Affine, Challenge255<_>>::init(proof_bytes.as_slice());
-
-        verify_proof(params, vk, strategy, &[&pi_refs], &mut transcript)
-            .map_err(|e| VerifierError::InvalidProof(format!("batch[{i}]: {e}")))?;
+    if proofs.is_empty() {
+        return Ok(());
     }
-    Ok(())
+
+    let mut batch = BatchVerifier::new();
+    for (proof_bytes, pi) in proofs {
+        let instances: Vec<Vec<vesta::Scalar>> = pi
+            .iter()
+            .map(|column| column.iter().copied().collect())
+            .collect();
+        batch.add_proof(vec![instances], proof_bytes.clone());
+    }
+
+    if batch.finalize(params, vk) {
+        Ok(())
+    } else {
+        Err(VerifierError::InvalidProof(
+            "batch verification failed — one or more proofs are invalid".into(),
+        ))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
