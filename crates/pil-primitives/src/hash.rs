@@ -8,11 +8,11 @@ use std::sync::OnceLock;
 /// for the Pallas base field, following the specification from
 /// Grassi et al. "Poseidon: A New Hash Function for Zero-Knowledge
 /// Proof Systems" (USENIX Security 2021).
-const POSEIDON_RATE: usize = 2;
-const POSEIDON_CAPACITY: usize = 1;
-const POSEIDON_WIDTH: usize = POSEIDON_RATE + POSEIDON_CAPACITY;
-const POSEIDON_FULL_ROUNDS: usize = 8;
-const POSEIDON_PARTIAL_ROUNDS: usize = 56;
+pub const POSEIDON_RATE: usize = 2;
+pub const POSEIDON_CAPACITY: usize = 1;
+pub const POSEIDON_WIDTH: usize = POSEIDON_RATE + POSEIDON_CAPACITY;
+pub const POSEIDON_FULL_ROUNDS: usize = 8;
+pub const POSEIDON_PARTIAL_ROUNDS: usize = 56;
 
 /// Generate round constants deterministically using a domain-separated
 /// Blake2b hash. Each constant is derived from the domain tag
@@ -53,6 +53,16 @@ fn cached_round_constants() -> &'static Vec<Base> {
 
 fn cached_mds_matrix() -> &'static [[Base; POSEIDON_WIDTH]; POSEIDON_WIDTH] {
     MDS_MATRIX.get_or_init(mds_matrix)
+}
+
+/// Public access to round constants for in-circuit Poseidon.
+pub fn round_constants() -> &'static Vec<Base> {
+    cached_round_constants()
+}
+
+/// Public access to MDS matrix for in-circuit Poseidon.
+pub fn mds() -> &'static [[Base; POSEIDON_WIDTH]; POSEIDON_WIDTH] {
+    cached_mds_matrix()
 }
 
 /// S-box: x -> x^5 over the Pallas base field.

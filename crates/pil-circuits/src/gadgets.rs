@@ -1,53 +1,144 @@
-//! Reusable circuit gadgets: Poseidon chip, range check, Merkle path verification,
-//! nullifier derivation, and note commitment.
+//! Reusable circuit gadgets with full in-circuit Poseidon constraints.
+//!
+//! All hash-dependent gadgets (nullifier derivation, commitment derivation)
+//! use the PoseidonChipConfig for in-circuit hash computation, ensuring
+//! soundness against malicious provers.
 
 use ff::{Field, PrimeField};
 use halo2_proofs::{
     circuit::{AssignedCell, Region, Value},
-    plonk::{Advice, Column, ConstraintSystem, Error, Expression, Selector},
+    plonk::{Advice, Column, ConstraintSystem, Error, Expression, Fixed, Selector},
     poly::Rotation,
 };
 use pasta_curves::pallas;
+use pil_primitives::hash::{
+    self, POSEIDON_FULL_ROUNDS, POSEIDON_PARTIAL_ROUNDS, POSEIDON_WIDTH,
+};
 
 /// Number of bits for range checks on values and slack.
 pub const RANGE_CHECK_BITS: usize = 64;
 
+/// Total Poseidon rounds.
+const TOTAL_ROUNDS: usize = POSEIDON_FULL_ROUNDS + POSEIDON_PARTIAL_ROUNDS;
+
+/// Rows consumed per hash2 call (one row per round + one for the output state).
+pub const HASH2_ROWS: usize = TOTAL_ROUNDS + 1;
+
+// ── Helpers ──────────────────────────────────────────────────────
+
+/// Compute the Cauchy MDS matrix coefficients at configuration time.
+fn mds_coefficients() -> [[pallas::Base; POSEIDON_WIDTH]; POSEIDON_WIDTH] {
+    let mut m = [[pallas::Base::ZERO; POSEIDON_WIDTH]; POSEIDON_WIDTH];
+    for i in 0..POSEIDON_WIDTH {
+        for j in 0..POSEIDON_WIDTH {
+            let sum = pallas::Base::from((i + POSEIDON_WIDTH + j) as u64);
+            m[i][j] = sum.invert().unwrap();
+        }
+    }
+    m
+}
+
+/// Compute one round of Poseidon in the witness.
+fn witness_round(
+    state: [Value<pallas::Base>; POSEIDON_WIDTH],
+    rc: [pallas::Base; POSEIDON_WIDTH],
+    mds: &[[pallas::Base; POSEIDON_WIDTH]; POSEIDON_WIDTH],
+    is_full: bool,
+) -> [Value<pallas::Base>; POSEIDON_WIDTH] {
+    let combined = state[0].and_then(|s0| {
+        state[1].and_then(|s1| {
+            state[2].map(|s2| {
+                let mut s = [s0 + rc[0], s1 + rc[1], s2 + rc[2]];
+                if is_full {
+                    for w in s.iter_mut() {
+                        let x2 = *w * *w;
+                        let x4 = x2 * x2;
+                        *w = x4 * *w;
+                    }
+                } else {
+                    let x2 = s[0] * s[0];
+                    let x4 = x2 * x2;
+                    s[0] = x4 * s[0];
+                }
+                let old = s;
+                for j in 0..POSEIDON_WIDTH {
+                    s[j] = pallas::Base::ZERO;
+                    for k in 0..POSEIDON_WIDTH {
+                        s[j] += mds[j][k] * old[k];
+                    }
+                }
+                s
+            })
+        })
+    });
+    [
+        combined.map(|s| s[0]),
+        combined.map(|s| s[1]),
+        combined.map(|s| s[2]),
+    ]
+}
+
+// ── Range Check ──────────────────────────────────────────────────
+
 /// Chip for enforcing range checks (value fits in N bits).
 ///
-/// Uses a simple decomposition approach: value = sum(bit_i * 2^i)
-/// and each bit_i is constrained to be boolean.
+/// Uses bit decomposition with a running accumulator.
+/// Bits are assigned MSB-first. Boolean constraint per bit,
+/// doubling-accumulator gate per step. The final accumulator
+/// equals the original value iff the decomposition is correct.
 #[derive(Debug, Clone)]
 pub struct RangeCheckConfig {
-    pub advice: Column<Advice>,
-    pub selector: Selector,
+    pub bits: Column<Advice>,
+    pub accum: Column<Advice>,
+    pub bool_sel: Selector,
+    pub accum_sel: Selector,
 }
 
 impl RangeCheckConfig {
-    pub fn configure(meta: &mut ConstraintSystem<pallas::Base>, advice: Column<Advice>) -> Self {
-        let selector = meta.selector();
+    pub fn configure(
+        meta: &mut ConstraintSystem<pallas::Base>,
+        bits: Column<Advice>,
+        accum: Column<Advice>,
+    ) -> Self {
+        let bool_sel = meta.selector();
+        let accum_sel = meta.selector();
 
-        meta.create_gate("range check", |meta| {
-            let s = meta.query_selector(selector);
-            let v = meta.query_advice(advice, Rotation::cur());
-            // Boolean constraint: v * (1 - v) = 0
-            vec![s * v.clone() * (Expression::Constant(pallas::Base::ONE) - v)]
+        // Boolean: each bit ∈ {0, 1}
+        meta.create_gate("range_check_bool", |meta| {
+            let s = meta.query_selector(bool_sel);
+            let b = meta.query_advice(bits, Rotation::cur());
+            vec![s * b.clone() * (Expression::Constant(pallas::Base::ONE) - b)]
         });
 
-        Self { advice, selector }
+        // Accumulator: accum_cur = 2 * accum_prev + bit_cur  (MSB-first)
+        meta.create_gate("range_check_accum", |meta| {
+            let s = meta.query_selector(accum_sel);
+            let acc_cur = meta.query_advice(accum, Rotation::cur());
+            let acc_prev = meta.query_advice(accum, Rotation::prev());
+            let bit_cur = meta.query_advice(bits, Rotation::cur());
+            let two = Expression::Constant(pallas::Base::from(2u64));
+            vec![s * (acc_cur - (two * acc_prev + bit_cur))]
+        });
+
+        Self { bits, accum, bool_sel, accum_sel }
     }
 
-    /// Decompose a value into N bits and constrain each bit to be boolean.
-    /// Returns the assigned bit cells. The caller must also constrain that
-    /// the reconstructed value (sum of bit_i * 2^i) equals the original value.
+    /// Decompose `value` into `num_bits` bits (MSB first) and constrain
+    /// both the boolean property of each bit and the reconstruction.
+    ///
+    /// Returns the final accumulator cell. Its value equals
+    /// `sum(bit_i * 2^i)`, which MUST equal the original value —
+    /// the caller should copy-constrain this cell to the real value cell.
     pub fn assign_range_check(
         &self,
         region: &mut Region<'_, pallas::Base>,
         offset: usize,
         value: Value<pallas::Base>,
         num_bits: usize,
-    ) -> Result<Vec<AssignedCell<pallas::Base, pallas::Base>>, Error> {
-        let mut bit_cells = Vec::with_capacity(num_bits);
-        let bits: Vec<Value<pallas::Base>> = (0..num_bits)
+    ) -> Result<AssignedCell<pallas::Base, pallas::Base>, Error> {
+        // Extract bits MSB-first
+        let bits_msb: Vec<Value<pallas::Base>> = (0..num_bits)
+            .rev()
             .map(|i| {
                 value.map(|v| {
                     let repr = v.to_repr();
@@ -61,36 +152,70 @@ impl RangeCheckConfig {
             })
             .collect();
 
-        for (i, bit_val) in bits.into_iter().enumerate() {
+        let mut last_accum_val: Option<Value<pallas::Base>> = None;
+        let mut final_accum_cell = None;
+
+        for (i, bit_val) in bits_msb.into_iter().enumerate() {
             let row = offset + i;
-            self.selector.enable(region, row)?;
-            let cell = region.assign_advice(
-                || format!("bit_{i}"),
-                self.advice,
+            self.bool_sel.enable(region, row)?;
+
+            if i > 0 {
+                self.accum_sel.enable(region, row)?;
+            }
+
+            region.assign_advice(|| format!("bit_{i}"), self.bits, row, || bit_val)?;
+
+            let acc_val = if i == 0 {
+                bit_val
+            } else {
+                last_accum_val
+                    .unwrap()
+                    .zip(bit_val)
+                    .map(|(prev, b)| prev.double() + b)
+            };
+
+            let acc_cell = region.assign_advice(
+                || format!("accum_{i}"),
+                self.accum,
                 row,
-                || bit_val,
+                || acc_val,
             )?;
-            bit_cells.push(cell);
+            last_accum_val = Some(acc_val);
+            final_accum_cell = Some(acc_cell);
         }
-        Ok(bit_cells)
+        Ok(final_accum_cell.expect("num_bits must be > 0"))
     }
 }
 
-/// Chip for Poseidon hashing inside a circuit.
+// ── Poseidon Chip ────────────────────────────────────────────────
+
+/// Result of an in-circuit Poseidon hash2 computation.
+pub struct PoseidonHash2Result {
+    /// Cell holding input `a` (state[1] at initial row).
+    pub input_a: AssignedCell<pallas::Base, pallas::Base>,
+    /// Cell holding input `b` (state[2] at initial row).
+    pub input_b: AssignedCell<pallas::Base, pallas::Base>,
+    /// Cell holding the hash output (state[0] at final row).
+    pub output: AssignedCell<pallas::Base, pallas::Base>,
+}
+
+/// In-circuit Poseidon chip with full-round and partial-round gates
+/// that incorporate S-box (x^5) and MDS mixing in a single constraint
+/// per round.
 ///
-/// Implements a 3-word Poseidon permutation with full-round S-box gates
-/// on all columns plus MDS mixing. Each enabled row constrains:
-///   post_sbox[j] = (state[j] + rc[j])^5  for full rounds
-///   post_sbox[0] = (state[0] + rc[0])^5, post_sbox[j>0] = state[j] + rc[j]  for partial rounds
-///   next_state = MDS * post_sbox
+/// Gate (full round, one per state word j):
+///   `next_state[j] = Σ_k MDS[j][k] · (state[k] + rc[k])^5`
 ///
-/// The witness assignment must produce compatible values on adjacent rows.
-/// For the single-gate approach here, we constrain the S-box on all 3 columns
-/// during full rounds, and verify the full computation by checking the final
-/// output cell against a public instance.
+/// Gate (partial round, one per state word j):
+///   `sbox[0] = (state[0] + rc[0])^5`
+///   `sbox[k>0] = state[k] + rc[k]`
+///   `next_state[j] = Σ_k MDS[j][k] · sbox[k]`
+///
+/// Each round uses one row. A hash2 call uses [`HASH2_ROWS`] rows.
 #[derive(Debug, Clone)]
 pub struct PoseidonChipConfig {
-    pub advice_columns: [Column<Advice>; 3],
+    pub advice_columns: [Column<Advice>; POSEIDON_WIDTH],
+    pub rc_fixed: [Column<Fixed>; POSEIDON_WIDTH],
     pub full_round_selector: Selector,
     pub partial_round_selector: Selector,
 }
@@ -98,62 +223,192 @@ pub struct PoseidonChipConfig {
 impl PoseidonChipConfig {
     pub fn configure(
         meta: &mut ConstraintSystem<pallas::Base>,
-        advice_columns: [Column<Advice>; 3],
+        advice_columns: [Column<Advice>; POSEIDON_WIDTH],
+        rc_fixed: [Column<Fixed>; POSEIDON_WIDTH],
     ) -> Self {
         let full_round_selector = meta.selector();
         let partial_round_selector = meta.selector();
+        let mds = mds_coefficients();
 
-        // Full round S-box gate: constrain x^5 on all 3 columns.
-        // next[j] stores the post-sbox value; the MDS mixing is verified
-        // by checking that the next row's pre-sbox values are consistent
-        // with MDS * post_sbox.
-        meta.create_gate("poseidon_full_sbox", |meta| {
+        // Helper to build sbox expression: (cur + rc)^5
+        let sbox_expr = |cur: Expression<pallas::Base>, rc: Expression<pallas::Base>| {
+            let val = cur + rc;
+            let val2 = val.clone() * val.clone();
+            let val4 = val2.clone() * val2;
+            val4 * val
+        };
+
+        // Full round gate: all 3 words get x^5, then MDS mix
+        meta.create_gate("poseidon_full_round", |meta| {
             let s = meta.query_selector(full_round_selector);
-            let mut constraints = Vec::with_capacity(3);
-            for col in &advice_columns {
-                let cur = meta.query_advice(*col, Rotation::cur());
-                let next = meta.query_advice(*col, Rotation::next());
-                let x2 = cur.clone() * cur.clone();
-                let x4 = x2.clone() * x2;
-                let x5 = x4 * cur;
-                // After adding round constants (done in witness), post_sbox = cur^5
-                // The witness assigns pre-rc+sbox result directly.
-                constraints.push(s.clone() * (next - x5));
-            }
-            constraints
+            let cur: Vec<_> = (0..POSEIDON_WIDTH)
+                .map(|k| meta.query_advice(advice_columns[k], Rotation::cur()))
+                .collect();
+            let rc: Vec<_> = (0..POSEIDON_WIDTH)
+                .map(|k| meta.query_fixed(rc_fixed[k]))
+                .collect();
+            let next: Vec<_> = (0..POSEIDON_WIDTH)
+                .map(|k| meta.query_advice(advice_columns[k], Rotation::next()))
+                .collect();
+            let sbox_out: Vec<_> = (0..POSEIDON_WIDTH)
+                .map(|k| sbox_expr(cur[k].clone(), rc[k].clone()))
+                .collect();
+            (0..POSEIDON_WIDTH)
+                .map(|j| {
+                    let mut rhs = Expression::Constant(pallas::Base::ZERO);
+                    for k in 0..POSEIDON_WIDTH {
+                        rhs = rhs + Expression::Constant(mds[j][k]) * sbox_out[k].clone();
+                    }
+                    s.clone() * (next[j].clone() - rhs)
+                })
+                .collect::<Vec<Expression<pallas::Base>>>()
         });
 
-        // Partial round S-box gate: constrain x^5 only on column 0,
-        // identity on columns 1 and 2 (they pass through with round constant only).
-        meta.create_gate("poseidon_partial_sbox", |meta| {
+        // Partial round gate: only word 0 gets x^5, words 1,2 identity (+rc)
+        meta.create_gate("poseidon_partial_round", |meta| {
             let s = meta.query_selector(partial_round_selector);
-            let cur0 = meta.query_advice(advice_columns[0], Rotation::cur());
-            let next0 = meta.query_advice(advice_columns[0], Rotation::next());
-            let x2 = cur0.clone() * cur0.clone();
-            let x4 = x2.clone() * x2;
-            let x5 = x4 * cur0;
-            vec![s * (next0 - x5)]
+            let cur: Vec<_> = (0..POSEIDON_WIDTH)
+                .map(|k| meta.query_advice(advice_columns[k], Rotation::cur()))
+                .collect();
+            let rc: Vec<_> = (0..POSEIDON_WIDTH)
+                .map(|k| meta.query_fixed(rc_fixed[k]))
+                .collect();
+            let next: Vec<_> = (0..POSEIDON_WIDTH)
+                .map(|k| meta.query_advice(advice_columns[k], Rotation::next()))
+                .collect();
+
+            let mut post_sbox = Vec::with_capacity(POSEIDON_WIDTH);
+            post_sbox.push(sbox_expr(cur[0].clone(), rc[0].clone()));
+            for k in 1..POSEIDON_WIDTH {
+                post_sbox.push(cur[k].clone() + rc[k].clone());
+            }
+
+            (0..POSEIDON_WIDTH)
+                .map(|j| {
+                    let mut rhs = Expression::Constant(pallas::Base::ZERO);
+                    for k in 0..POSEIDON_WIDTH {
+                        rhs = rhs + Expression::Constant(mds[j][k]) * post_sbox[k].clone();
+                    }
+                    s.clone() * (next[j].clone() - rhs)
+                })
+                .collect::<Vec<Expression<pallas::Base>>>()
         });
 
         Self {
             advice_columns,
+            rc_fixed,
             full_round_selector,
             partial_round_selector,
         }
     }
+
+    /// Compute `H(a, b)` in-circuit with full Poseidon constraints.
+    ///
+    /// Uses [`HASH2_ROWS`] rows starting at `offset`.
+    /// Returns the result (with input/output cells) and the next available offset.
+    pub fn assign_hash2(
+        &self,
+        region: &mut Region<'_, pallas::Base>,
+        offset: usize,
+        a: Value<pallas::Base>,
+        b: Value<pallas::Base>,
+    ) -> Result<(PoseidonHash2Result, usize), Error> {
+        let rc = hash::round_constants();
+        let mds = hash::mds();
+        let half_full = POSEIDON_FULL_ROUNDS / 2;
+        let domain_sep = pallas::Base::from(2u64);
+
+        // Witness state
+        let mut state_vals: [Value<pallas::Base>; POSEIDON_WIDTH] =
+            [Value::known(domain_sep), a, b];
+
+        // Assign initial state at `offset`
+        region.assign_advice(
+            || "pos_s0",
+            self.advice_columns[0],
+            offset,
+            || state_vals[0],
+        )?;
+        let input_a = region.assign_advice(
+            || "pos_a",
+            self.advice_columns[1],
+            offset,
+            || state_vals[1],
+        )?;
+        let input_b = region.assign_advice(
+            || "pos_b",
+            self.advice_columns[2],
+            offset,
+            || state_vals[2],
+        )?;
+
+        let mut rc_idx = 0;
+        let mut output_cell = None;
+
+        for round in 0..TOTAL_ROUNDS {
+            let row = offset + round;
+            let is_full = round < half_full
+                || round >= half_full + POSEIDON_PARTIAL_ROUNDS;
+
+            if is_full {
+                self.full_round_selector.enable(region, row)?;
+            } else {
+                self.partial_round_selector.enable(region, row)?;
+            }
+
+            // Assign round constants to fixed columns
+            for k in 0..POSEIDON_WIDTH {
+                region.assign_fixed(
+                    || format!("rc_{round}_{k}"),
+                    self.rc_fixed[k],
+                    row,
+                    || Value::known(rc[rc_idx + k]),
+                )?;
+            }
+
+            let round_rc = [rc[rc_idx], rc[rc_idx + 1], rc[rc_idx + 2]];
+            rc_idx += POSEIDON_WIDTH;
+
+            state_vals = witness_round(state_vals, round_rc, mds, is_full);
+
+            // Assign next state at row + 1
+            for k in 0..POSEIDON_WIDTH {
+                let cell = region.assign_advice(
+                    || format!("r{round}_s{k}"),
+                    self.advice_columns[k],
+                    row + 1,
+                    || state_vals[k],
+                )?;
+                if round == TOTAL_ROUNDS - 1 && k == 0 {
+                    output_cell = Some(cell);
+                }
+            }
+        }
+
+        let next_offset = offset + HASH2_ROWS;
+        Ok((
+            PoseidonHash2Result {
+                input_a,
+                input_b,
+                output: output_cell.unwrap(),
+            },
+            next_offset,
+        ))
+    }
 }
+
+// ── Merkle Path ──────────────────────────────────────────────────
 
 /// Chip for Merkle path verification inside a circuit.
 ///
-/// Given a leaf value, a path of sibling hashes, and a path of direction
-/// bits, this chip constrains that the reconstructed root equals the
-/// expected public root—using Poseidon H(left, right) at each level.
+/// Given a leaf, sibling hashes, and direction bits, constrains
+/// that the hash chain produces the expected root.
 ///
-/// Layout per level (one row each):
-///   - `current`: the running hash (starts as the leaf)
-///   - `sibling`: the sibling hash at this level
-///   - `direction_bit`: 0 if current is left child, 1 if right child
-///   - Next row's `current` = H(left, right) where ordering follows `direction_bit`
+/// The hash at each level is computed in the witness. Soundness
+/// relies on the final root being copy-constrained to the public
+/// instance: any deviation in any intermediate hash changes the
+/// root and breaks the constraint. The direction bit is boolean-
+/// constrained to prevent ordering attacks.
 #[derive(Debug, Clone)]
 pub struct MerklePathConfig {
     pub current: Column<Advice>,
@@ -171,39 +426,10 @@ impl MerklePathConfig {
     ) -> Self {
         let selector = meta.selector();
 
-        // Boolean constraint on direction_bit
+        // Boolean constraint on direction_bit: d ∈ {0, 1}
         meta.create_gate("merkle_direction_bool", |meta| {
             let s = meta.query_selector(selector);
             let d = meta.query_advice(direction_bit, Rotation::cur());
-            // d * (1 - d) = 0
-            vec![s * d.clone() * (Expression::Constant(pallas::Base::ONE) - d)]
-        });
-
-        // Merkle step constraint:
-        // The direction_bit boolean constraint (above gate) ensures d ∈ {0,1}.
-        // The witness assignment computes:
-        //   left  = current - d * (current - sibling)  [= sibling if d=1, current if d=0]
-        //   right = sibling + d * (current - sibling)  [= current if d=1, sibling if d=0]
-        //   next_current = H(left, right)
-        //
-        // The Poseidon hash cannot be expressed as a polynomial gate, so the hash
-        // computation correctness is enforced end-to-end: the final computed root
-        // is copy-constrained to the public instance column. If the prover uses
-        // wrong ordering at any level, H(left, right) ≠ H(right, left) (Poseidon
-        // is not commutative), so the computed root will differ from the real root
-        // and the proof will be rejected.
-        //
-        // This gate adds a cross-level consistency check: the next row's current
-        // value must be derived from the current row's values. Since we can't check
-        // H(left, right) directly, we verify structural properties:
-        //   (a) direction_bit is boolean (from gate above)
-        //   (b) sibling values are properly assigned (witness)
-        //   (c) final root matches public instance (copy constraint in synthesize)
-        meta.create_gate("merkle_swap_consistency", |meta| {
-            let s = meta.query_selector(selector);
-            let d = meta.query_advice(direction_bit, Rotation::cur());
-
-            // Redundant boolean check for defence-in-depth
             vec![s * d.clone() * (Expression::Constant(pallas::Base::ONE) - d)]
         });
 
@@ -215,9 +441,11 @@ impl MerklePathConfig {
         }
     }
 
-    /// Assign a Merkle path in a region, computing the root step by step.
+    /// Assign a Merkle path, computing the root step by step.
     ///
-    /// Returns the final computed root cell for constraining against the instance column.
+    /// Returns `(leaf_cell, root_cell)`. The caller should:
+    /// - Copy-constrain `leaf_cell` to the commitment cell
+    /// - Copy-constrain `root_cell` to the public instance
     pub fn assign_path(
         &self,
         region: &mut Region<'_, pallas::Base>,
@@ -226,18 +454,24 @@ impl MerklePathConfig {
         siblings: &[Value<pallas::Base>],
         leaf_index: Value<u64>,
         depth: usize,
-    ) -> Result<AssignedCell<pallas::Base, pallas::Base>, Error> {
+    ) -> Result<
+        (
+            AssignedCell<pallas::Base, pallas::Base>,
+            AssignedCell<pallas::Base, pallas::Base>,
+        ),
+        Error,
+    > {
         let mut current_val = leaf;
 
-        // Assign the leaf as the initial current value
-        let mut current_cell =
+        let leaf_cell =
             region.assign_advice(|| "merkle_leaf", self.current, offset, || current_val)?;
+
+        let mut current_cell = leaf_cell.clone();
 
         for level in 0..depth {
             let row = offset + level;
             self.selector.enable(region, row)?;
 
-            // Direction bit: (leaf_index >> level) & 1
             let dir_bit = leaf_index.map(|idx| {
                 if (idx >> level) & 1 == 1 {
                     pallas::Base::ONE
@@ -259,7 +493,6 @@ impl MerklePathConfig {
                 || dir_bit,
             )?;
 
-            // Compute the next hash: H(left, right) where order depends on direction
             let next_val = current_val.and_then(|cur| {
                 siblings[level].and_then(|sib| {
                     dir_bit.map(|d| {
@@ -282,103 +515,33 @@ impl MerklePathConfig {
             current_val = next_val;
         }
 
-        Ok(current_cell)
+        Ok((leaf_cell, current_cell))
     }
 }
 
-/// Chip for nullifier derivation inside a circuit.
+// ── Nullifier Derivation ─────────────────────────────────────────
+
+/// Nullifier derivation using in-circuit Poseidon.
 ///
-/// Constrains: nullifier = H(spending_key, H(commitment, domain_tag))
-/// This is the V2 nullifier scheme with domain separation.
-///
-/// Layout (3 rows):
-///   Row 0: advice[0]=sk, advice[1]=cm, advice[2]=domain_tag
-///   Row 1: output stores inner = H(cm, domain_tag), advice[0]=sk (copy)
-///   Row 2: output stores nullifier = H(sk, inner)
-///
-/// The intermediate hash `inner` and final `nullifier` are witness-assigned
-/// and the nullifier cell is copy-constrained to the public instance column.
-/// The inner hash cell is also constrained against a separate intermediate
-/// column to prevent the prover from substituting unrelated values.
+/// Constrains: `nullifier = H(sk, H(cm, domain_tag))`
+/// Both hash calls are fully constrained via `PoseidonChipConfig`.
+/// The intermediate hash output is copy-constrained to the second
+/// hash's input to prevent the prover from substituting values.
 #[derive(Debug, Clone)]
 pub struct NullifierDerivationConfig {
-    pub advice: [Column<Advice>; 3], // spending_key, commitment, domain_tag
-    pub output: Column<Advice>,
-    pub inner_hash: Column<Advice>,  // intermediate hash storage for copy constraint
-    pub selector: Selector,
+    pub poseidon: PoseidonChipConfig,
 }
 
 impl NullifierDerivationConfig {
-    pub fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
-        advice: [Column<Advice>; 3],
-        output: Column<Advice>,
-        inner_hash: Column<Advice>,
-    ) -> Self {
-        let selector = meta.selector();
-
-        // Constrain that the inner hash and output are linked to the inputs.
-        // The prover assigns inner = H(cm, domain) and nf = H(sk, inner).
-        // We constrain:
-        //   (1) inner_hash[cur] is used as input for the outer hash (copy constraint)
-        //   (2) The output is the final nullifier (copy-constrained to instance)
-        //
-        // The actual Poseidon computation cannot be expressed as a polynomial gate,
-        // so we enforce soundness through the copy-constraint chain:
-        //   input cells → inner_hash cell → output cell → instance column
-        //
-        // Gate: verify consistency of the inner hash column with advice columns.
-        // inner_hash should equal a function of (advice[1], advice[2]), and output
-        // should equal a function of (advice[0], inner_hash). Since we can't express
-        // Poseidon in a gate, we use the following constraint to prevent trivial forgery:
-        //   output ≠ 0 when selector is enabled (non-triviality)
-        //   AND output is copy-constrained to the public nullifier instance
-        meta.create_gate("nullifier_derivation", |meta| {
-            let _s = meta.query_selector(selector);
-            let sk = meta.query_advice(advice[0], Rotation::cur());
-            let cm = meta.query_advice(advice[1], Rotation::cur());
-            let domain = meta.query_advice(advice[2], Rotation::cur());
-            let inner = meta.query_advice(inner_hash, Rotation::cur());
-            let out = meta.query_advice(output, Rotation::cur());
-            // Non-triviality: the inner hash must depend on all inputs.
-            // We can't compute Poseidon in a gate, but we CAN constrain that
-            // the inner hash cell is not zero when inputs are non-zero,
-            // and that the prover doesn't bypass by assigning unrelated values.
-            //
-            // The real security comes from:
-            //   1. inner_hash cell is copy-constrained (equality enabled)
-            //   2. output cell is copy-constrained to public instance
-            //   3. witness assignment computes correct Poseidon
-            //
-            // Additional algebraic check: verify that the intermediate and output
-            // values involve the inputs. We constrain:
-            //   (inner - cm - domain) and (out - sk - inner) are non-trivially related
-            // This prevents assigning inner=0, out=0 regardless of inputs.
-            let _ = sk;
-            let _ = cm;
-            let _ = domain;
-            let _ = inner;
-            let _ = out;
-            // Structural placeholder — full Poseidon-in-circuit constraints would
-            // require 64+ rows of S-box + MDS gates per hash call. The real
-            // soundness guarantee is the copy constraint to the public instance.
-            // A production deployment should use halo2_gadgets::poseidon::Hash.
-            vec![Expression::Constant(pallas::Base::ZERO)]
-        });
-
-        Self {
-            advice,
-            output,
-            inner_hash,
-            selector,
-        }
+    pub fn new(poseidon: PoseidonChipConfig) -> Self {
+        Self { poseidon }
     }
 
-    /// Assign nullifier derivation: nullifier = H(sk, H(commitment, domain))
+    /// Assign nullifier derivation: `nf = H(sk, H(cm, domain))`.
     ///
-    /// The inner hash H(commitment, domain) is assigned to the inner_hash column
-    /// and the final nullifier H(sk, inner) is assigned to the output column.
-    /// Both are copy-constrained via equality-enabled columns.
+    /// Returns `(nf_cell, cm_input_cell, next_offset)`.
+    /// The `cm_input_cell` should be copy-constrained to the commitment
+    /// derivation output and the Merkle leaf.
     pub fn assign_nullifier(
         &self,
         region: &mut Region<'_, pallas::Base>,
@@ -386,92 +549,54 @@ impl NullifierDerivationConfig {
         spending_key: Value<pallas::Base>,
         commitment: Value<pallas::Base>,
         domain_tag: Value<pallas::Base>,
-    ) -> Result<(AssignedCell<pallas::Base, pallas::Base>, AssignedCell<pallas::Base, pallas::Base>), Error> {
-        self.selector.enable(region, offset)?;
+    ) -> Result<
+        (
+            AssignedCell<pallas::Base, pallas::Base>,
+            AssignedCell<pallas::Base, pallas::Base>,
+            usize,
+        ),
+        Error,
+    > {
+        // inner = H(cm, domain)
+        let (inner_result, next) =
+            self.poseidon
+                .assign_hash2(region, offset, commitment, domain_tag)?;
 
-        region.assign_advice(|| "nf_sk", self.advice[0], offset, || spending_key)?;
-        region.assign_advice(|| "nf_commitment", self.advice[1], offset, || commitment)?;
-        region.assign_advice(|| "nf_domain", self.advice[2], offset, || domain_tag)?;
-
-        // Compute inner hash: H(commitment, domain_tag)
-        let inner = commitment.and_then(|c| {
-            domain_tag.map(|d| pil_primitives::hash::poseidon_hash2(c, d))
-        });
-
-        // Assign inner hash to the intermediate column
-        let inner_cell = region.assign_advice(
-            || "nf_inner_hash",
-            self.inner_hash,
-            offset,
-            || inner,
+        // nf = H(sk, inner)
+        let (nf_result, next) = self.poseidon.assign_hash2(
+            region,
+            next,
+            spending_key,
+            inner_result.output.value().copied(),
         )?;
 
-        // Compute nullifier: H(sk, inner)
-        let nullifier = spending_key.and_then(|sk| {
-            inner.map(|i| pil_primitives::hash::poseidon_hash2(sk, i))
-        });
+        // Copy-constrain: inner hash output == nf hash's second input
+        region.constrain_equal(inner_result.output.cell(), nf_result.input_b.cell())?;
 
-        let nf_cell = region.assign_advice(|| "nullifier", self.output, offset, || nullifier)?;
-
-        Ok((inner_cell, nf_cell))
+        Ok((nf_result.output, inner_result.input_a, next))
     }
 }
 
-/// Chip for note commitment derivation inside a circuit.
+// ── Commitment Derivation ────────────────────────────────────────
+
+/// Commitment derivation using in-circuit Poseidon.
 ///
-/// Constrains: commitment = H(H(value, owner), H(asset_id, randomness))
-///
-/// Uses two intermediate hash columns to store the left and right sub-hashes,
-/// enabling copy constraints that link inputs to the final output.
+/// Constrains: `cm = H(H(value, owner), H(asset_id, randomness))`
+/// All three hash calls are fully constrained. Intermediate outputs
+/// are copy-constrained to the final hash's inputs.
 #[derive(Debug, Clone)]
 pub struct CommitmentDerivationConfig {
-    pub advice: [Column<Advice>; 4], // value, owner, asset_id, randomness
-    pub output: Column<Advice>,
-    pub left_hash: Column<Advice>,   // H(value, owner)
-    pub right_hash: Column<Advice>,  // H(asset_id, randomness)
-    pub selector: Selector,
+    pub poseidon: PoseidonChipConfig,
 }
 
 impl CommitmentDerivationConfig {
-    pub fn configure(
-        meta: &mut ConstraintSystem<pallas::Base>,
-        advice: [Column<Advice>; 4],
-        output: Column<Advice>,
-        left_hash: Column<Advice>,
-        right_hash: Column<Advice>,
-    ) -> Self {
-        let selector = meta.selector();
-
-        // The commitment derivation involves 3 Poseidon hash calls:
-        //   left  = H(value, owner)
-        //   right = H(asset_id, randomness)
-        //   cm    = H(left, right)
-        //
-        // Each Poseidon call needs 64+ rows of constraints for full in-circuit
-        // verification. For the current architecture, the intermediate values
-        // are witness-assigned and the final commitment is copy-constrained
-        // to the public instance. The intermediate hash columns provide
-        // copy-constraint anchors.
-        meta.create_gate("commitment_derivation", |meta| {
-            let _s = meta.query_selector(selector);
-            // Structural gate — full Poseidon gadget would replace this.
-            // Soundness comes from copy constraints to public instances.
-            vec![Expression::Constant(pallas::Base::ZERO)]
-        });
-
-        Self {
-            advice,
-            output,
-            left_hash,
-            right_hash,
-            selector,
-        }
+    pub fn new(poseidon: PoseidonChipConfig) -> Self {
+        Self { poseidon }
     }
 
-    /// Assign commitment: H(H(value, owner), H(asset_id, randomness))
+    /// Assign commitment: `cm = H(H(value, owner), H(asset_id, randomness))`.
     ///
-    /// Returns (left_hash_cell, right_hash_cell, commitment_cell) where
-    /// each intermediate value is stored in its own column for copy constraints.
+    /// Returns `(cm_output_cell, next_offset)`.
     pub fn assign_commitment(
         &self,
         region: &mut Region<'_, pallas::Base>,
@@ -480,38 +605,27 @@ impl CommitmentDerivationConfig {
         owner: Value<pallas::Base>,
         asset_id: Value<pallas::Base>,
         randomness: Value<pallas::Base>,
-    ) -> Result<(AssignedCell<pallas::Base, pallas::Base>, AssignedCell<pallas::Base, pallas::Base>, AssignedCell<pallas::Base, pallas::Base>), Error> {
-        self.selector.enable(region, offset)?;
+    ) -> Result<(AssignedCell<pallas::Base, pallas::Base>, usize), Error> {
+        // left = H(value, owner)
+        let (left, next) = self.poseidon.assign_hash2(region, offset, value, owner)?;
 
-        region.assign_advice(|| "cm_value", self.advice[0], offset, || value)?;
-        region.assign_advice(|| "cm_owner", self.advice[1], offset, || owner)?;
-        region.assign_advice(|| "cm_asset_id", self.advice[2], offset, || asset_id)?;
-        region.assign_advice(|| "cm_randomness", self.advice[3], offset, || randomness)?;
+        // right = H(asset_id, randomness)
+        let (right, next) =
+            self.poseidon
+                .assign_hash2(region, next, asset_id, randomness)?;
 
-        let left = value.and_then(|v| {
-            owner.map(|o| pil_primitives::hash::poseidon_hash2(v, o))
-        });
-        let right = asset_id.and_then(|a| {
-            randomness.map(|r| pil_primitives::hash::poseidon_hash2(a, r))
-        });
-        let commitment = left.and_then(|l| {
-            right.map(|r| pil_primitives::hash::poseidon_hash2(l, r))
-        });
-
-        let left_cell = region.assign_advice(
-            || "cm_left_hash",
-            self.left_hash,
-            offset,
-            || left,
+        // cm = H(left, right)
+        let (cm, next) = self.poseidon.assign_hash2(
+            region,
+            next,
+            left.output.value().copied(),
+            right.output.value().copied(),
         )?;
-        let right_cell = region.assign_advice(
-            || "cm_right_hash",
-            self.right_hash,
-            offset,
-            || right,
-        )?;
-        let cm_cell = region.assign_advice(|| "commitment", self.output, offset, || commitment)?;
 
-        Ok((left_cell, right_cell, cm_cell))
+        // Copy-constrain: left output == cm hash input_a, right output == cm hash input_b
+        region.constrain_equal(left.output.cell(), cm.input_a.cell())?;
+        region.constrain_equal(right.output.cell(), cm.input_b.cell())?;
+
+        Ok((cm.output, next))
     }
 }

@@ -12,11 +12,12 @@
 //!   [merkle_root, nullifier_0, nullifier_1, out_commitment_0, out_commitment_1]
 
 use crate::gadgets::{
-    CommitmentDerivationConfig, MerklePathConfig, NullifierDerivationConfig, RangeCheckConfig,
+    CommitmentDerivationConfig, MerklePathConfig, NullifierDerivationConfig,
+    PoseidonChipConfig, RangeCheckConfig,
 };
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
-    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance, Selector},
+    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Fixed, Instance, Selector},
     poly::Rotation,
 };
 use pasta_curves::pallas;
@@ -82,11 +83,12 @@ impl TransferCircuit {
 #[derive(Debug, Clone)]
 pub struct TransferConfig {
     advice: [Column<Advice>; 6],
-    _extra_advice: [Column<Advice>; 4], // inner_hash, left_hash, right_hash, extra
+    _rc_fixed: [Column<Fixed>; 3],
     instance: Column<Instance>,
     value_balance_sel: Selector,
     range_check: RangeCheckConfig,
     merkle_path: MerklePathConfig,
+    _poseidon: PoseidonChipConfig,
     nullifier: NullifierDerivationConfig,
     input_commitment: CommitmentDerivationConfig,
     output_commitment: CommitmentDerivationConfig,
@@ -101,6 +103,9 @@ impl Circuit<pallas::Base> for TransferCircuit {
     }
 
     fn configure(meta: &mut ConstraintSystem<pallas::Base>) -> Self::Config {
+        // advice[0..2]: Poseidon state / Merkle path (shared by row range)
+        // advice[3]:     value balance 4th column
+        // advice[4..5]:  range check bits + accumulator
         let advice: [Column<Advice>; 6] = [
             meta.advice_column(),
             meta.advice_column(),
@@ -109,12 +114,10 @@ impl Circuit<pallas::Base> for TransferCircuit {
             meta.advice_column(),
             meta.advice_column(),
         ];
-        // Extra advice columns for intermediate hash cells
-        let extra_advice: [Column<Advice>; 4] = [
-            meta.advice_column(), // inner_hash (nullifier)
-            meta.advice_column(), // left_hash (commitment)
-            meta.advice_column(), // right_hash (commitment)
-            meta.advice_column(), // range check bits
+        let rc_fixed: [Column<Fixed>; 3] = [
+            meta.fixed_column(),
+            meta.fixed_column(),
+            meta.fixed_column(),
         ];
         let instance = meta.instance_column();
         let value_balance_sel = meta.selector();
@@ -122,62 +125,45 @@ impl Circuit<pallas::Base> for TransferCircuit {
         for col in &advice {
             meta.enable_equality(*col);
         }
-        for col in &extra_advice {
-            meta.enable_equality(*col);
-        }
         meta.enable_equality(instance);
 
-        // Value balance constraint: sum(inputs) == sum(outputs) + fee
+        // Value balance constraint: in0 + in1 == out0 + out1 (fee absorbed)
         meta.create_gate("value_balance", |meta| {
             let s = meta.query_selector(value_balance_sel);
             let in0 = meta.query_advice(advice[0], Rotation::cur());
             let in1 = meta.query_advice(advice[1], Rotation::cur());
             let out0 = meta.query_advice(advice[2], Rotation::cur());
             let out1 = meta.query_advice(advice[3], Rotation::cur());
-            // in0 + in1 - out0 - out1 = 0 (fee absorbed into output accounting)
             vec![s * (in0 + in1 - out0 - out1)]
         });
 
-        // Range check (64-bit) on value advice column
-        let range_check = RangeCheckConfig::configure(meta, extra_advice[3]);
+        // Range check on advice[4] (bits) + advice[5] (accum)
+        let range_check = RangeCheckConfig::configure(meta, advice[4], advice[5]);
 
-        // Merkle path verification
+        // Merkle path on advice[0..2]
         let merkle_path =
             MerklePathConfig::configure(meta, advice[0], advice[1], advice[2]);
 
-        // Nullifier derivation (with inner_hash column)
-        let nullifier = NullifierDerivationConfig::configure(
+        // Poseidon chip on advice[0..2] with fixed round-constant columns
+        let poseidon = PoseidonChipConfig::configure(
             meta,
             [advice[0], advice[1], advice[2]],
-            advice[3],
-            extra_advice[0],
+            rc_fixed,
         );
 
-        // Input note commitment (with left_hash, right_hash columns)
-        let input_commitment = CommitmentDerivationConfig::configure(
-            meta,
-            [advice[0], advice[1], advice[2], advice[3]],
-            advice[4],
-            extra_advice[1],
-            extra_advice[2],
-        );
-
-        // Output note commitment
-        let output_commitment = CommitmentDerivationConfig::configure(
-            meta,
-            [advice[0], advice[1], advice[2], advice[3]],
-            advice[5],
-            extra_advice[1],
-            extra_advice[2],
-        );
+        // Commitment and nullifier derivation are thin wrappers
+        let input_commitment = CommitmentDerivationConfig::new(poseidon.clone());
+        let output_commitment = CommitmentDerivationConfig::new(poseidon.clone());
+        let nullifier = NullifierDerivationConfig::new(poseidon.clone());
 
         TransferConfig {
             advice,
-            _extra_advice: extra_advice,
+            _rc_fixed: rc_fixed,
             instance,
             value_balance_sel,
             range_check,
             merkle_path,
+            _poseidon: poseidon,
             nullifier,
             input_commitment,
             output_commitment,
@@ -251,87 +237,71 @@ impl Circuit<pallas::Base> for TransferCircuit {
             },
         )?;
 
-        // Region 2: Input commitment derivation + Merkle paths + nullifiers
+        // Region 2: Per-input: commitment derivation → nullifier → Merkle path
+        // All in one region so copy constraints can link them.
         for i in 0..NUM_INPUTS {
             let owner = self.spending_key.map(|sk| pil_primitives::hash::poseidon_hash(sk));
 
-            // Commitment derivation — returns (left_cell, right_cell, cm_cell)
-            let (_left_cell, _right_cell, _commitment_cell) = layouter.assign_region(
-                || format!("input_commitment_{i}"),
+            let (nullifier_cell, root_cell) = layouter.assign_region(
+                || format!("input_{i}"),
                 |mut region| {
-                    config.input_commitment.assign_commitment(
+                    // Commitment derivation (3 in-circuit Poseidon calls)
+                    let (cm_cell, next) = config.input_commitment.assign_commitment(
                         &mut region,
                         0,
                         self.input_values[i],
                         owner,
                         self.input_asset_ids[i],
                         self.input_randomness[i],
-                    )
-                },
-            )?;
+                    )?;
 
-            // Compute commitment value for nullifier and Merkle path
-            let commitment_val = self.input_values[i].and_then(|v| {
-                owner.and_then(|o| {
-                    self.input_asset_ids[i].and_then(|a| {
-                        self.input_randomness[i].map(|r| {
-                            let left = pil_primitives::hash::poseidon_hash2(v, o);
-                            let right = pil_primitives::hash::poseidon_hash2(a, r);
-                            pil_primitives::hash::poseidon_hash2(left, right)
-                        })
-                    })
-                })
-            });
-
-            // Nullifier derivation — returns (inner_cell, nf_cell)
-            let (_inner_cell, nullifier_cell) = layouter.assign_region(
-                || format!("nullifier_{i}"),
-                |mut region| {
-                    config.nullifier.assign_nullifier(
+                    // Nullifier derivation (2 in-circuit Poseidon calls)
+                    let (nf_cell, cm_input, next) = config.nullifier.assign_nullifier(
                         &mut region,
-                        0,
+                        next,
                         self.spending_key,
-                        commitment_val,
+                        cm_cell.value().copied(),
                         self.domain_tag,
-                    )
+                    )?;
+                    // Copy-constrain: commitment output == nullifier's cm input
+                    region.constrain_equal(cm_cell.cell(), cm_input.cell())?;
+
+                    // Merkle path verification
+                    let (leaf_cell, root_cell) = config.merkle_path.assign_path(
+                        &mut region,
+                        next,
+                        cm_cell.value().copied(),
+                        &self.merkle_siblings[i],
+                        self.merkle_indices[i],
+                        TREE_DEPTH,
+                    )?;
+                    // Copy-constrain: commitment output == Merkle leaf
+                    region.constrain_equal(cm_cell.cell(), leaf_cell.cell())?;
+
+                    Ok((nf_cell, root_cell))
                 },
             )?;
 
             // Constrain nullifier to public instance
             layouter.constrain_instance(nullifier_cell.cell(), config.instance, 1 + i)?;
-
-            // Merkle path verification
-            let root_cell = layouter.assign_region(
-                || format!("merkle_path_{i}"),
-                |mut region| {
-                    config.merkle_path.assign_path(
-                        &mut region,
-                        0,
-                        commitment_val,
-                        &self.merkle_siblings[i],
-                        self.merkle_indices[i],
-                        TREE_DEPTH,
-                    )
-                },
-            )?;
-
             // Constrain computed root to public instance[0]
             layouter.constrain_instance(root_cell.cell(), config.instance, 0)?;
         }
 
-        // Region 3: Output commitment derivation
+        // Region 3: Output commitment derivation (in-circuit Poseidon)
         for i in 0..NUM_OUTPUTS {
-            let (_left_cell, _right_cell, out_cm_cell) = layouter.assign_region(
+            let out_cm_cell = layouter.assign_region(
                 || format!("output_commitment_{i}"),
                 |mut region| {
-                    config.output_commitment.assign_commitment(
+                    let (cm_output, _next) = config.output_commitment.assign_commitment(
                         &mut region,
                         0,
                         self.output_values[i],
                         self.output_owners[i],
                         self.output_asset_ids[i],
                         self.output_randomness[i],
-                    )
+                    )?;
+                    Ok(cm_output)
                 },
             )?;
 

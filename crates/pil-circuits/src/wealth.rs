@@ -49,6 +49,7 @@ pub struct WealthConfig {
     value: Column<Advice>,
     accum: Column<Advice>,
     _rc_bits: Column<Advice>,
+    _rc_accum: Column<Advice>,
     instance: Column<Instance>,
     /// Enabled on each note row: constrain accum[i] = accum[i-1] + value[i]
     sel_accum: Selector,
@@ -70,6 +71,7 @@ impl Circuit<pallas::Base> for WealthProofCircuit {
         let value = meta.advice_column();
         let accum = meta.advice_column();
         let rc_bits = meta.advice_column();
+        let rc_accum = meta.advice_column();
         let instance = meta.instance_column();
         let sel_accum = meta.selector();
         let sel_final = meta.selector();
@@ -77,10 +79,11 @@ impl Circuit<pallas::Base> for WealthProofCircuit {
         meta.enable_equality(value);
         meta.enable_equality(accum);
         meta.enable_equality(rc_bits);
+        meta.enable_equality(rc_accum);
         meta.enable_equality(instance);
 
-        // Range check for slack bit decomposition
-        let range_check = RangeCheckConfig::configure(meta, rc_bits);
+        // Range check for slack bit decomposition (needs 2 columns)
+        let range_check = RangeCheckConfig::configure(meta, rc_bits, rc_accum);
 
         // Running-sum gate: accum_next = accum_cur + value_next
         meta.create_gate("running_sum", |meta| {
@@ -106,6 +109,7 @@ impl Circuit<pallas::Base> for WealthProofCircuit {
             value,
             accum,
             _rc_bits: rc_bits,
+            _rc_accum: rc_accum,
             instance,
             sel_accum,
             sel_final,
