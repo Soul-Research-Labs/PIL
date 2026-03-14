@@ -1,9 +1,4 @@
-import {
-  bytesToHex,
-  hexToBytes,
-  randomBytes,
-  concatBytes,
-} from "./utils.js";
+import { bytesToHex, hexToBytes, randomBytes, concatBytes } from "./utils.js";
 import { poseidonHash } from "./poseidon.js";
 import { domainTag, ChainDomain } from "./domain.js";
 
