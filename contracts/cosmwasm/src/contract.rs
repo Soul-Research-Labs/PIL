@@ -409,7 +409,6 @@ fn execute_withdraw(
     let recipient_addr = deps.api.addr_validate(&recipient)?;
 
     // Send withdrawn funds to recipient using configured denom
-    let config = CONFIG.load(deps.storage)?;
     let send_msg = BankMsg::Send {
         to_address: recipient_addr.to_string(),
         amount: vec![Coin {
@@ -445,24 +444,40 @@ fn verify_proof_attestation(
     merkle_root: &str,
     attestations: &[ProofAttestation],
 ) -> Result<(), ContractError> {
-    // If no committee is configured, require admin-mode (empty committee = permissive)
+    // If no committee is configured, reject all proofs. An empty committee
+    // must not silently bypass verification.
     if config.proof_verifier_committee.is_empty() {
-        return Ok(());
+        return Err(ContractError::InvalidProof {
+            detail: "no committee configured — proof verification impossible".to_string(),
+        });
     }
 
-    // Compute the proof digest that committee members signed
+    // Compute the proof digest that committee members signed.
+    // Hash the raw binary bytes (not hex strings) for consistent cross-platform digests.
+    let proof_bytes = hex::decode(proof_hex)
+        .map_err(|e| ContractError::InvalidHex { detail: e.to_string() })?;
     let mut hasher = Sha256::new();
-    hasher.update(proof_hex.as_bytes());
+    hasher.update(&proof_bytes);
     for input in public_inputs {
-        hasher.update(input.as_bytes());
+        let input_bytes = hex::decode(input)
+            .map_err(|e| ContractError::InvalidHex { detail: e.to_string() })?;
+        hasher.update(&input_bytes);
     }
-    hasher.update(merkle_root.as_bytes());
+    let root_bytes = hex::decode(merkle_root)
+        .map_err(|e| ContractError::InvalidHex { detail: e.to_string() })?;
+    hasher.update(&root_bytes);
     let digest = hasher.finalize();
 
     let mut valid_count: u32 = 0;
+    let mut seen_attesters: Vec<String> = Vec::new();
     for att in attestations {
         // Attester must be a registered committee member
         if !config.proof_verifier_committee.contains(&att.pubkey) {
+            continue;
+        }
+
+        // Deduplicate: each committee member may only attest once per proof
+        if seen_attesters.contains(&att.pubkey) {
             continue;
         }
 
@@ -479,6 +494,7 @@ fn verify_proof_attestation(
         // Verify ed25519 signature using CosmWasm's built-in API
         if api.ed25519_verify(&digest, &sig_bytes, &pubkey_bytes).unwrap_or(false) {
             valid_count += 1;
+            seen_attesters.push(att.pubkey.clone());
         }
     }
 
