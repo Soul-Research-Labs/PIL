@@ -216,19 +216,11 @@ impl BridgeRelayer {
             return Ok(None);
         }
 
-        // Relay all missed epochs sequentially
+        // Relay all missed epochs sequentially, using relay_epoch for
+        // proper duplicate/rate-limit checking (prevents TOCTOU issues)
         for epoch in (last_relayed + 1)..=latest_epoch {
             let attestation = self.fetch_epoch_attestation(source, epoch).await?;
-
-            // Verify the attestation's light-client proof
-            self.verify_attestation(&attestation)?;
-            self.metrics.verifications += 1;
-
-            // Submit to destination
-            self.submit_attestation(destination, &attestation).await?;
-
-            self.latest_relayed.insert(pair_key, epoch);
-            self.metrics.epochs_relayed += 1;
+            self.relay_epoch(source, destination, attestation).await?;
         }
 
         Ok(Some(latest_epoch))
@@ -928,6 +920,15 @@ impl MithrilCertificate {
         let timestamp = u64::from_be_bytes(data[41..49].try_into().unwrap());
         let ttl_secs = u32::from_be_bytes(data[49..53].try_into().unwrap());
         let num_signers = u16::from_be_bytes(data[53..55].try_into().unwrap()) as usize;
+
+        // Cap signer count to prevent DoS via large allocation.
+        // No real validator set exceeds 10,000 participants.
+        const MAX_SIGNERS: usize = 10_000;
+        if num_signers > MAX_SIGNERS {
+            return Err(format!(
+                "Certificate claims {num_signers} signers (max {MAX_SIGNERS})",
+            ));
+        }
 
         let expected_len = CERT_HEADER_SIZE + num_signers * SIGNER_ENTRY_SIZE;
         if data.len() < expected_len {
