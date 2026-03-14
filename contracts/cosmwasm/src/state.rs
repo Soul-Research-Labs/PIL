@@ -11,6 +11,11 @@ pub struct Config {
     pub epoch_duration_secs: u64,
     pub ibc_epoch_channel: Option<String>,
     pub denom: String,
+    /// Hex-encoded ed25519 pubkeys of committee members that verify Groth16
+    /// proofs off-chain and provide attestations on-chain.
+    pub proof_verifier_committee: Vec<String>,
+    /// Minimum number of valid attestations required per proof.
+    pub committee_threshold: u32,
 }
 
 /// Pool runtime state — updated on every operation.

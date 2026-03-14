@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::error::ContractError;
 use crate::msg::{
     ConfigResponse, EpochRootResponse, ExecuteMsg, InstantiateMsg,
-    NullifierStatusResponse, QueryMsg, StatusResponse,
+    NullifierStatusResponse, ProofAttestation, QueryMsg, StatusResponse,
 };
 use crate::state::{
     Config, NoteCommitment, NullifierEntry, PoolState, COMMITMENTS, CONFIG,
@@ -33,6 +33,8 @@ pub fn instantiate(
         epoch_duration_secs: msg.epoch_duration_secs,
         ibc_epoch_channel: msg.ibc_epoch_channel,
         denom: msg.denom,
+        proof_verifier_committee: msg.proof_verifier_committee,
+        committee_threshold: msg.committee_threshold,
     };
     CONFIG.save(deps.storage, &config)?;
 
@@ -70,6 +72,8 @@ pub fn execute(
             merkle_root,
             nullifiers,
             output_commitments,
+            public_inputs,
+            attestations,
             domain_chain_id,
             domain_app_id,
         } => execute_transfer(
@@ -80,6 +84,8 @@ pub fn execute(
             merkle_root,
             nullifiers,
             output_commitments,
+            public_inputs,
+            attestations,
             domain_chain_id,
             domain_app_id,
         ),
@@ -88,6 +94,8 @@ pub fn execute(
             merkle_root,
             nullifiers,
             change_commitments,
+            public_inputs,
+            attestations,
             exit_amount,
             recipient,
         } => execute_withdraw(
@@ -98,6 +106,8 @@ pub fn execute(
             merkle_root,
             nullifiers,
             change_commitments,
+            public_inputs,
+            attestations,
             exit_amount,
             recipient,
         ),
@@ -189,10 +199,13 @@ fn execute_transfer(
     merkle_root: String,
     nullifiers: Vec<String>,
     output_commitments: Vec<String>,
+    public_inputs: Vec<String>,
+    attestations: Vec<ProofAttestation>,
     _domain_chain_id: u32,
     _domain_app_id: u32,
 ) -> Result<Response, ContractError> {
     let state = POOL_STATE.load(deps.storage)?;
+    let config = CONFIG.load(deps.storage)?;
 
     // Verify merkle root matches
     if merkle_root != state.merkle_root {
@@ -202,12 +215,27 @@ fn execute_transfer(
         });
     }
 
-    // Verify proof is non-empty
-    if proof.is_empty() {
+    // Verify proof structure: must be 192 bytes (384 hex chars) for Groth16 BLS12-381
+    let proof_bytes = hex::decode(&proof)
+        .map_err(|e| ContractError::InvalidHex { detail: e.to_string() })?;
+    if proof_bytes.len() != 192 {
         return Err(ContractError::InvalidProof {
-            detail: "empty proof".to_string(),
+            detail: format!(
+                "Groth16 proof must be 192 bytes (A‖B‖C), got {}",
+                proof_bytes.len()
+            ),
         });
     }
+
+    // Verify committee attestation over the proof
+    verify_proof_attestation(
+        deps.api,
+        &config,
+        &proof,
+        &public_inputs,
+        &merkle_root,
+        &attestations,
+    )?;
 
     // Check and insert nullifiers
     let mut nf_count = NULLIFIER_COUNT.load(deps.storage)?;
@@ -277,10 +305,13 @@ fn execute_withdraw(
     merkle_root: String,
     nullifiers: Vec<String>,
     change_commitments: Vec<String>,
+    public_inputs: Vec<String>,
+    attestations: Vec<ProofAttestation>,
     exit_amount: Uint128,
     recipient: String,
 ) -> Result<Response, ContractError> {
     let state = POOL_STATE.load(deps.storage)?;
+    let config = CONFIG.load(deps.storage)?;
 
     // Verify merkle root
     if merkle_root != state.merkle_root {
@@ -290,12 +321,27 @@ fn execute_withdraw(
         });
     }
 
-    // Verify proof
-    if proof.is_empty() {
+    // Verify proof structure
+    let proof_bytes = hex::decode(&proof)
+        .map_err(|e| ContractError::InvalidHex { detail: e.to_string() })?;
+    if proof_bytes.len() != 192 {
         return Err(ContractError::InvalidProof {
-            detail: "empty proof".to_string(),
+            detail: format!(
+                "Groth16 proof must be 192 bytes (A‖B‖C), got {}",
+                proof_bytes.len()
+            ),
         });
     }
+
+    // Verify committee attestation over the proof
+    verify_proof_attestation(
+        deps.api,
+        &config,
+        &proof,
+        &public_inputs,
+        &merkle_root,
+        &attestations,
+    )?;
 
     // Verify sufficient balance
     if state.pool_balance < exit_amount {
@@ -377,6 +423,75 @@ fn execute_withdraw(
         .add_attribute("action", "withdraw")
         .add_attribute("exit_amount", exit_amount)
         .add_attribute("recipient", recipient))
+}
+
+// ─── Proof Attestation Verification ──────────────────────────────────
+
+/// Verify that sufficient committee members have attested to the proof's validity.
+///
+/// Committee members verify the Groth16 proof off-chain (BLS12-381 pairing check)
+/// and sign the proof digest: SHA-256(proof_hex || public_input_0 || ... || merkle_root).
+///
+/// On-chain we verify:
+/// 1. The proof has the correct structure (192 bytes)
+/// 2. Each attestation signature is valid (ed25519 over the digest)
+/// 3. Each attester is a registered committee member
+/// 4. At least `committee_threshold` valid attestations are provided
+fn verify_proof_attestation(
+    api: &dyn cosmwasm_std::Api,
+    config: &Config,
+    proof_hex: &str,
+    public_inputs: &[String],
+    merkle_root: &str,
+    attestations: &[ProofAttestation],
+) -> Result<(), ContractError> {
+    // If no committee is configured, require admin-mode (empty committee = permissive)
+    if config.proof_verifier_committee.is_empty() {
+        return Ok(());
+    }
+
+    // Compute the proof digest that committee members signed
+    let mut hasher = Sha256::new();
+    hasher.update(proof_hex.as_bytes());
+    for input in public_inputs {
+        hasher.update(input.as_bytes());
+    }
+    hasher.update(merkle_root.as_bytes());
+    let digest = hasher.finalize();
+
+    let mut valid_count: u32 = 0;
+    for att in attestations {
+        // Attester must be a registered committee member
+        if !config.proof_verifier_committee.contains(&att.pubkey) {
+            continue;
+        }
+
+        // Decode pubkey and signature
+        let pubkey_bytes = hex::decode(&att.pubkey)
+            .map_err(|e| ContractError::InvalidHex { detail: e.to_string() })?;
+        let sig_bytes = hex::decode(&att.signature)
+            .map_err(|e| ContractError::InvalidHex { detail: e.to_string() })?;
+
+        if pubkey_bytes.len() != 32 || sig_bytes.len() != 64 {
+            continue; // Skip malformed attestations
+        }
+
+        // Verify ed25519 signature using CosmWasm's built-in API
+        if api.ed25519_verify(&digest, &sig_bytes, &pubkey_bytes).unwrap_or(false) {
+            valid_count += 1;
+        }
+    }
+
+    if valid_count < config.committee_threshold {
+        return Err(ContractError::InvalidProof {
+            detail: format!(
+                "insufficient attestations: got {valid_count}, need {}",
+                config.committee_threshold,
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 fn execute_finalize_epoch(
@@ -571,6 +686,8 @@ mod tests {
             epoch_duration_secs: 3600,
             ibc_epoch_channel: None,
             denom: "uatom".to_string(),
+            proof_verifier_committee: vec![],
+            committee_threshold: 0,
         };
         let info = message_info(&Addr::unchecked("admin"), &[]);
         instantiate(deps, mock_env(), info, msg).unwrap();
@@ -667,10 +784,12 @@ mod tests {
         let state = POOL_STATE.load(deps.as_ref().storage).unwrap();
         let nullifier = "b".repeat(64);
         let transfer_msg = ExecuteMsg::Transfer {
-            proof: "deadbeef".to_string(),
+            proof: "aa".repeat(192),
             merkle_root: state.merkle_root.clone(),
             nullifiers: vec![nullifier.clone()],
             output_commitments: vec!["c".repeat(64)],
+            public_inputs: vec![],
+            attestations: vec![],
             domain_chain_id: 3,
             domain_app_id: 1,
         };
@@ -680,10 +799,12 @@ mod tests {
         // Try to use same nullifier again
         let state = POOL_STATE.load(deps.as_ref().storage).unwrap();
         let transfer_msg2 = ExecuteMsg::Transfer {
-            proof: "deadbeef".to_string(),
+            proof: "aa".repeat(192),
             merkle_root: state.merkle_root.clone(),
             nullifiers: vec![nullifier.clone()],
             output_commitments: vec!["d".repeat(64)],
+            public_inputs: vec![],
+            attestations: vec![],
             domain_chain_id: 3,
             domain_app_id: 1,
         };
@@ -884,10 +1005,12 @@ mod tests {
 
         let state = POOL_STATE.load(deps.as_ref().storage).unwrap();
         let transfer = ExecuteMsg::Transfer {
-            proof: "deadbeef".to_string(),
+            proof: "aa".repeat(192),
             merkle_root: state.merkle_root,
             nullifiers: vec![nf.clone()],
             output_commitments: vec!["c".repeat(64)],
+            public_inputs: vec![],
+            attestations: vec![],
             domain_chain_id: 3,
             domain_app_id: 1,
         };
@@ -923,10 +1046,12 @@ mod tests {
         setup_contract(deps.as_mut());
 
         let msg = ExecuteMsg::Withdraw {
-            proof: "deadbeef".to_string(),
+            proof: "aa".repeat(192),
             merkle_root: "0".repeat(64),
             nullifiers: vec!["b".repeat(64)],
             change_commitments: vec![],
+            public_inputs: vec![],
+            attestations: vec![],
             exit_amount: Uint128::new(1000),
             recipient: "cosmos1recipient".to_string(),
         };

@@ -14,6 +14,17 @@ pub struct InstantiateMsg {
     pub ibc_epoch_channel: Option<String>,
     /// Native token denomination for the pool (e.g. "uatom", "uosmo").
     pub denom: String,
+    /// Committee verifier addresses (hex-encoded ed25519 pubkeys).
+    /// These verify Groth16 proofs off-chain and provide attestations.
+    #[serde(default)]
+    pub proof_verifier_committee: Vec<String>,
+    /// Minimum number of committee attestations required.
+    #[serde(default = "default_committee_threshold")]
+    pub committee_threshold: u32,
+}
+
+fn default_committee_threshold() -> u32 {
+    1
 }
 
 /// Execute messages — state-modifying operations on the privacy pool.
@@ -27,7 +38,7 @@ pub enum ExecuteMsg {
     },
     /// Private transfer within the shielded pool.
     Transfer {
-        /// Hex-encoded ZK proof bytes.
+        /// Hex-encoded ZK proof bytes (Groth16 BLS12-381).
         proof: String,
         /// Hex-encoded expected Merkle root (must match current state).
         merkle_root: String,
@@ -35,6 +46,11 @@ pub enum ExecuteMsg {
         nullifiers: Vec<String>,
         /// Hex-encoded commitments for new output notes.
         output_commitments: Vec<String>,
+        /// Hex-encoded public inputs (32-byte scalars).
+        public_inputs: Vec<String>,
+        /// Committee attestations: each is a hex-encoded signature over
+        /// SHA-256(proof || public_inputs || merkle_root).
+        attestations: Vec<ProofAttestation>,
         /// Chain domain for nullifier derivation.
         domain_chain_id: u32,
         /// App domain for nullifier derivation.
@@ -42,7 +58,7 @@ pub enum ExecuteMsg {
     },
     /// Withdraw funds from the shielded pool to a public address.
     Withdraw {
-        /// Hex-encoded ZK proof bytes.
+        /// Hex-encoded ZK proof bytes (Groth16 BLS12-381).
         proof: String,
         /// Hex-encoded expected Merkle root.
         merkle_root: String,
@@ -50,6 +66,10 @@ pub enum ExecuteMsg {
         nullifiers: Vec<String>,
         /// Hex-encoded commitments for change notes.
         change_commitments: Vec<String>,
+        /// Hex-encoded public inputs (32-byte scalars).
+        public_inputs: Vec<String>,
+        /// Committee attestations over the proof.
+        attestations: Vec<ProofAttestation>,
         /// Amount to withdraw (in smallest denomination).
         exit_amount: Uint128,
         /// Recipient bech32 address.
@@ -122,4 +142,15 @@ pub struct ConfigResponse {
     pub epoch_duration_secs: u64,
     pub ibc_epoch_channel: Option<String>,
     pub denom: String,
+}
+
+/// Committee attestation over a proof hash.
+/// Each committee member signs SHA-256(proof || concatenated_public_inputs || merkle_root)
+/// using their ed25519 key registered at instantiation.
+#[cw_serde]
+pub struct ProofAttestation {
+    /// Hex-encoded ed25519 public key of the attester.
+    pub pubkey: String,
+    /// Hex-encoded ed25519 signature (64 bytes).
+    pub signature: String,
 }
