@@ -49,7 +49,8 @@ impl PrivacyPool {
             .checked_add(value)
             .ok_or(PoolError::Overflow)?;
 
-        *self.asset_balances.entry(asset_id).or_insert(0) += value;
+        let asset_bal = self.asset_balances.entry(asset_id).or_insert(0);
+        *asset_bal = asset_bal.checked_add(value).ok_or(PoolError::Overflow)?;
 
         Ok(DepositReceipt {
             leaf_index,

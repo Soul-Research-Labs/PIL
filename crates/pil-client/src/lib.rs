@@ -134,7 +134,7 @@ impl Wallet {
             if accumulated >= target {
                 break;
             }
-            accumulated += note.note.value;
+            accumulated = accumulated.saturating_add(note.note.value);
             selected.push(note);
         }
 
