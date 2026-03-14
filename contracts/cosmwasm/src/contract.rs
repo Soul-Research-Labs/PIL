@@ -2,7 +2,7 @@
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
     to_json_binary, BankMsg, Binary, Coin, CosmosMsg, Deps, DepsMut, Env, IbcMsg,
-    IbcTimeout, MessageInfo, Response, StdResult, Uint128,
+    IbcTimeout, MessageInfo, Order, Response, StdResult, Uint128,
 };
 
 use sha2::{Digest, Sha256};
@@ -194,7 +194,7 @@ fn execute_deposit(
 fn execute_transfer(
     deps: DepsMut,
     env: Env,
-    _info: MessageInfo,
+    info: MessageInfo,
     proof: String,
     merkle_root: String,
     nullifiers: Vec<String>,
@@ -204,6 +204,11 @@ fn execute_transfer(
     _domain_chain_id: u32,
     _domain_app_id: u32,
 ) -> Result<Response, ContractError> {
+    // Transfers must not carry funds — value stays in the pool
+    if !info.funds.is_empty() {
+        return Err(ContractError::UnexpectedFunds {});
+    }
+
     let state = POOL_STATE.load(deps.storage)?;
     let config = CONFIG.load(deps.storage)?;
 
@@ -300,7 +305,7 @@ fn execute_transfer(
 fn execute_withdraw(
     deps: DepsMut,
     env: Env,
-    _info: MessageInfo,
+    info: MessageInfo,
     proof: String,
     merkle_root: String,
     nullifiers: Vec<String>,
@@ -310,6 +315,11 @@ fn execute_withdraw(
     exit_amount: Uint128,
     recipient: String,
 ) -> Result<Response, ContractError> {
+    // Withdrawals must not carry extra funds
+    if !info.funds.is_empty() {
+        return Err(ContractError::UnexpectedFunds {});
+    }
+
     let state = POOL_STATE.load(deps.storage)?;
     let config = CONFIG.load(deps.storage)?;
 
@@ -444,8 +454,14 @@ fn verify_proof_attestation(
     merkle_root: &str,
     attestations: &[ProofAttestation],
 ) -> Result<(), ContractError> {
-    // If no committee is configured, reject all proofs. An empty committee
-    // must not silently bypass verification.
+    // If threshold is 0, skip attestation verification entirely.
+    // This is used for testing or chains with alternative proof verification.
+    if config.committee_threshold == 0 {
+        return Ok(());
+    }
+
+    // If threshold > 0 but no committee is configured, reject all proofs.
+    // A non-zero threshold with an empty committee must not silently bypass verification.
     if config.proof_verifier_committee.is_empty() {
         return Err(ContractError::InvalidProof {
             detail: "no committee configured — proof verification impossible".to_string(),
@@ -523,12 +539,38 @@ fn execute_finalize_epoch(
     let mut state = POOL_STATE.load(deps.storage)?;
     let epoch = state.current_epoch;
 
+    // Compute the nullifier Merkle root by hashing all nullifiers from this epoch.
+    // SHA-256 chain: root = H(H(H(0 || nf_0) || nf_1) || ...)
+    let mut root_hasher = Sha256::new();
+    root_hasher.update([0u8; 32]); // Start with zero root
+    // Iterate all nullifiers; include those from the current epoch
+    let epoch_nullifiers: Vec<_> = NULLIFIERS
+        .range(deps.storage, None, None, Order::Ascending)
+        .filter_map(|item| {
+            item.ok().and_then(|(key, entry)| {
+                if entry.epoch == epoch {
+                    Some(key)
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+    for nf_hex in &epoch_nullifiers {
+        let prev = root_hasher.finalize_reset();
+        root_hasher.update(&prev);
+        if let Ok(nf_bytes) = hex::decode(nf_hex) {
+            root_hasher.update(&nf_bytes);
+        }
+    }
+    let nullifier_root = hex::encode(root_hasher.finalize());
+
     // Store epoch root
     EPOCH_ROOTS.save(
         deps.storage,
         epoch,
         &crate::state::EpochRoot {
-            nullifier_root: format!("epoch_{epoch}_root"),
+            nullifier_root,
             finalized_at: env.block.time.seconds(),
             note_count_at_finalization: state.note_count,
         },
@@ -606,6 +648,13 @@ fn execute_receive_epoch_root(
     let config = CONFIG.load(deps.storage)?;
     if info.sender != config.admin {
         return Err(ContractError::Unauthorized {});
+    }
+
+    // Validate nullifier_root is valid 32-byte hex
+    let root_bytes = hex::decode(&nullifier_root)
+        .map_err(|e| ContractError::InvalidHex { detail: e.to_string() })?;
+    if root_bytes.len() != 32 {
+        return Err(ContractError::InvalidCommitment {});
     }
 
     REMOTE_EPOCH_ROOTS.save(

@@ -41,4 +41,7 @@ pub enum ContractError {
 
     #[error("epoch mismatch: expected {expected}, got {got}")]
     EpochMismatch { expected: u64, got: u64 },
+
+    #[error("unexpected funds: transfers and withdrawals must not carry extra tokens")]
+    UnexpectedFunds {},
 }
