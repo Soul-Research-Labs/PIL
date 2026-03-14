@@ -1,5 +1,5 @@
 use ff::Field;
-use group::Group;
+use group::{prime::PrimeCurveAffine, Group};
 use pasta_curves::{arithmetic::CurveAffine, pallas};
 use pil_primitives::hash::poseidon_hash2;
 
@@ -29,7 +29,10 @@ pub struct StealthAddress {
 ///
 /// - `recipient_pk`: recipient's public key point
 /// - `recipient_owner`: recipient's owner field element
-pub fn stealth_send(recipient_pk: pallas::Point, recipient_owner: pallas::Base) -> StealthAddress {
+///
+/// Returns `None` if the recipient's public key is the identity point
+/// (which would make ECDH degenerate).
+pub fn stealth_send(recipient_pk: pallas::Point, recipient_owner: pallas::Base) -> Option<StealthAddress> {
     let mut rng = rand::thread_rng();
     let r = pallas::Scalar::random(&mut rng);
     let ephemeral_pk = pallas::Point::generator() * r;
@@ -39,16 +42,19 @@ pub fn stealth_send(recipient_pk: pallas::Point, recipient_owner: pallas::Base) 
     let shared_x = {
         use group::Curve;
         let affine = shared.to_affine();
+        if bool::from(affine.is_identity()) {
+            return None;
+        }
         *affine.coordinates().unwrap().x()
     };
 
     // One-time owner = Poseidon(shared_x, recipient_owner)
     let one_time_owner = poseidon_hash2(shared_x, recipient_owner);
 
-    StealthAddress {
+    Some(StealthAddress {
         one_time_owner,
         ephemeral_pk,
-    }
+    })
 }
 
 /// Scan for incoming stealth payments (recipient side).
@@ -57,21 +63,25 @@ pub fn stealth_send(recipient_pk: pallas::Point, recipient_owner: pallas::Base) 
 /// - `owner`: recipient's owner field element
 /// - `ephemeral_pk`: the ephemeral public key from the transaction
 ///
-/// Returns the one-time owner if the stealth address is for this recipient.
+/// Returns the one-time owner if the stealth address is for this recipient,
+/// or `None` if the ECDH shared point is the identity.
 pub fn stealth_receive(
     viewing_sk: pallas::Scalar,
     owner: pallas::Base,
     ephemeral_pk: pallas::Point,
-) -> pallas::Base {
+) -> Option<pallas::Base> {
     // ECDH: shared = viewing_sk * ephemeral_pk
     let shared = ephemeral_pk * viewing_sk;
     let shared_x = {
         use group::Curve;
         let affine = shared.to_affine();
+        if bool::from(affine.is_identity()) {
+            return None;
+        }
         *affine.coordinates().unwrap().x()
     };
 
-    poseidon_hash2(shared_x, owner)
+    Some(poseidon_hash2(shared_x, owner))
 }
 
 #[cfg(test)]
@@ -87,11 +97,12 @@ mod tests {
         let vk = sk.viewing_key();
 
         // Sender creates stealth address using the VIEWING public key
-        // (the viewing key is what the receiver will use to scan)
-        let stealth = stealth_send(vk.public_point(), owner);
+        let stealth = stealth_send(vk.public_point(), owner)
+            .expect("stealth_send should succeed with valid key");
 
         // Recipient scans using viewing key scalar
-        let detected_owner = stealth_receive(vk.scalar(), owner, stealth.ephemeral_pk);
+        let detected_owner = stealth_receive(vk.scalar(), owner, stealth.ephemeral_pk)
+            .expect("stealth_receive should succeed with valid key");
 
         assert_eq!(stealth.one_time_owner, detected_owner);
     }

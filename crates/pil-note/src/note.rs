@@ -1,6 +1,6 @@
 use ff::Field;
 use pil_primitives::{
-    hash::{poseidon_hash2, poseidon_hash3},
+    hash::poseidon_hash2,
     types::{Base, Commitment},
 };
 
@@ -43,11 +43,14 @@ impl Note {
         }
     }
 
-    /// Compute the note commitment: Poseidon(value, owner, H(asset_id, randomness)).
+    /// Compute the note commitment: H(H(value, owner), H(asset_id, randomness)).
+    ///
+    /// This matches the circuit's `CommitmentDerivationConfig` which computes
+    /// left = H(value, owner), right = H(asset_id, randomness), cm = H(left, right).
     pub fn commitment(&self) -> Commitment {
-        let inner = poseidon_hash2(Base::from(self.asset_id), self.randomness);
-        let cm = poseidon_hash3(Base::from(self.value), self.owner, inner);
-        Commitment(cm)
+        let left = poseidon_hash2(Base::from(self.value), self.owner);
+        let right = poseidon_hash2(Base::from(self.asset_id), self.randomness);
+        Commitment(poseidon_hash2(left, right))
     }
 }
 

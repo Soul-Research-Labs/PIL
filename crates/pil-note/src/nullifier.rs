@@ -11,18 +11,21 @@ pub fn derive_nullifier_v1(spending_key: Base, commitment: Commitment) -> Nullif
     Nullifier(poseidon_hash2(spending_key, commitment.0))
 }
 
-/// Derive a V2 nullifier (cross-chain): Poseidon(Poseidon(sk, cm), Poseidon(chain_id, app_id)).
+/// Derive a V2 nullifier (cross-chain): H(sk, H(cm, domain_tag)).
 ///
 /// Domain-separated nullifiers prevent double-spend attacks across chains.
 /// A note spent on Cardano cannot be replayed on Cosmos because the domain tags differ.
+///
+/// This matches the circuit's `NullifierDerivationConfig` which computes
+/// inner = H(commitment, domain_tag), nullifier = H(spending_key, inner).
 pub fn derive_nullifier_v2(
     spending_key: Base,
     commitment: Commitment,
     domain: &DomainSeparator,
 ) -> Nullifier {
-    let inner = poseidon_hash2(spending_key, commitment.0);
     let domain_tag = domain.to_domain_tag();
-    Nullifier(poseidon_hash2(inner, domain_tag))
+    let inner = poseidon_hash2(commitment.0, domain_tag);
+    Nullifier(poseidon_hash2(spending_key, inner))
 }
 
 #[cfg(test)]

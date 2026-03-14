@@ -41,7 +41,8 @@ impl SpendingKey {
         let mut base_repr = [0u8; 32];
         base_repr.copy_from_slice(repr.as_ref());
         base_repr[31] &= 0x3f; // Ensure it's in the base field
-        pallas::Base::from_repr(base_repr).unwrap_or(pallas::Base::from(0u64))
+        pallas::Base::from_repr(base_repr)
+            .expect("spending key repr must be a valid base field element after masking")
     }
 
     /// Get the raw scalar.
@@ -69,7 +70,8 @@ impl SpendingKey {
         let mut scalar_repr = [0u8; 32];
         scalar_repr.copy_from_slice(repr.as_ref());
         scalar_repr[31] &= 0x0f; // Ensure it's in the scalar field
-        let vk = pallas::Scalar::from_repr(scalar_repr).unwrap_or(pallas::Scalar::from(1u64));
+        let vk = pallas::Scalar::from_repr(scalar_repr)
+            .expect("viewing key repr must be a valid scalar field element after masking");
         let pk = pallas::Point::generator() * vk;
         ViewingKey { vk, pk }
     }
