@@ -12,6 +12,7 @@
 use aiken/collection/list
 use aiken/crypto.{VerificationKeyHash, blake2b_256}
 use cardano/transaction.{Transaction, Input, Output, find_input}
+use cardano/value
 use pil.{verify_groth16_proof}
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -144,12 +145,6 @@ fn find_continuing_output(
   }
 }
 
-/// Get the total lovelace in an output's value.
-fn lovelace_of(output: Output) -> Int {
-  output.value
-    |> value.lovelace_of
-}
-
 /// Count occurrences of a nullifier hash in the outputs.
 fn count_nullifier_outputs(
   outputs: List<Output>,
@@ -180,7 +175,7 @@ validator pil_privacy_pool {
   spend(
     datum: Option<PoolDatum>,
     redeemer: PoolRedeemer,
-    _input: Input,
+    input: Input,
     self: Transaction,
   ) {
     expect Some(pool_datum) = datum
@@ -208,7 +203,13 @@ validator pil_privacy_pool {
         // Pool NFT policy must be preserved
         let nft_preserved = cont_datum.pool_nft_policy == pool_datum.pool_nft_policy
 
-        valid_commitment? && valid_amount? && note_count_ok? && root_changed? && root_valid? && epoch_preserved? && admin_preserved? && nft_preserved?
+        // Deposit must increase the pool's ADA value by at least the declared amount
+        let pool_input = input.output
+        let input_lovelace = value.lovelace_of(pool_input.value)
+        let output_lovelace = value.lovelace_of(cont_output.value)
+        let value_increased = output_lovelace >= input_lovelace + amount
+
+        valid_commitment? && valid_amount? && note_count_ok? && root_changed? && root_valid? && epoch_preserved? && admin_preserved? && nft_preserved? && value_increased?
       }
 
       Transfer { proof, vk, merkle_root, nullifiers, output_commitments, public_inputs, .. } -> {
@@ -239,8 +240,9 @@ validator pil_privacy_pool {
         // note_count increases by the number of new output commitments
         let note_count_ok =
           cont_datum.note_count == pool_datum.note_count + list.length(output_commitments)
-        // Epoch and admin preserved
+        // Epoch, admin, and NFT policy must all be preserved
         let epoch_preserved = cont_datum.current_epoch == pool_datum.current_epoch
+        let admin_preserved = cont_datum.admin_pkh == pool_datum.admin_pkh
         let nft_preserved = cont_datum.pool_nft_policy == pool_datum.pool_nft_policy
 
         // Each nullifier must appear as a nullifier registry output (uniqueness on-chain)
@@ -250,7 +252,7 @@ validator pil_privacy_pool {
             fn(nf) { count_nullifier_outputs(self.outputs, nf) == 1 },
           )
 
-        root_matches? && proof_valid? && has_nullifiers? && has_outputs? && no_duplicates? && valid_nullifier_size? && valid_output_size? && note_count_ok? && epoch_preserved? && nft_preserved? && nullifiers_registered?
+        root_matches? && proof_valid? && has_nullifiers? && has_outputs? && no_duplicates? && valid_nullifier_size? && valid_output_size? && note_count_ok? && epoch_preserved? && admin_preserved? && nft_preserved? && nullifiers_registered?
       }
 
       Withdraw { proof, vk, merkle_root, nullifiers, exit_value, destination, public_inputs, .. } -> {
@@ -265,8 +267,9 @@ validator pil_privacy_pool {
         expect Some((cont_output, cont_datum)) =
           find_continuing_output(self.outputs, pool_datum.pool_nft_policy)
 
-        // Epoch and identity preserved
+        // Epoch, admin, and identity preserved
         let epoch_preserved = cont_datum.current_epoch == pool_datum.current_epoch
+        let admin_preserved = cont_datum.admin_pkh == pool_datum.admin_pkh
         let nft_preserved = cont_datum.pool_nft_policy == pool_datum.pool_nft_policy
 
         // Each nullifier must be registered as output
@@ -276,13 +279,14 @@ validator pil_privacy_pool {
             fn(nf) { count_nullifier_outputs(self.outputs, nf) == 1 },
           )
 
-        // A destination output must exist that pays at least exit_value.
-        // We check that some output contains the destination marker in its reference.
-        // (On-chain destination validation is application-specific; here we verify
-        //  exit_value is accounted for by the continuing output losing that amount.)
-        let valid_value_flow = True
+        // Verify value flow: the pool must lose exactly exit_value lovelace.
+        // This ensures the withdrawn value is actually sent to the destination.
+        let pool_input = input.output
+        let input_lovelace = value.lovelace_of(pool_input.value)
+        let output_lovelace = value.lovelace_of(cont_output.value)
+        let valid_value_flow = input_lovelace - exit_value == output_lovelace
 
-        root_matches? && proof_valid? && valid_exit? && valid_dest? && no_duplicates? && epoch_preserved? && nft_preserved? && nullifiers_registered? && valid_value_flow?
+        root_matches? && proof_valid? && valid_exit? && valid_dest? && no_duplicates? && epoch_preserved? && admin_preserved? && nft_preserved? && nullifiers_registered? && valid_value_flow?
       }
 
       FinalizeEpoch { nullifier_root, epoch } -> {
