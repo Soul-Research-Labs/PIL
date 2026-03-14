@@ -77,6 +77,7 @@ anyhow = "1.0"
 # CLI
 clap = { version = "4.0", features = ["derive"] }
 rustyline = "14.0"
+rpassword = "7.3"
 
 # Testing
 proptest = "1.4"

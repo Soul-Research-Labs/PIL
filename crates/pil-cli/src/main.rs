@@ -122,12 +122,35 @@ fn dirs_or_home() -> Option<PathBuf> {
 }
 
 fn read_password(prompt: &str) -> String {
-    eprint!("{prompt}");
-    use std::io::Write;
-    let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    let _ = std::io::stdin().read_line(&mut line);
-    line.trim().to_string()
+    rpassword::prompt_password(prompt).unwrap_or_default()
+}
+
+fn parse_field_element(hex_str: &str) -> Option<pasta_curves::pallas::Base> {
+    use ff::PrimeField;
+    let hex_str = hex_str.trim_start_matches("0x");
+    let bytes = hex::decode(hex_str).ok()?;
+    if bytes.len() > 32 {
+        return None;
+    }
+    // Pallas Base expects 32 little-endian bytes
+    let mut repr = [0u8; 32];
+    // hex is big-endian, reverse into little-endian
+    for (i, b) in bytes.iter().rev().enumerate() {
+        repr[i] = *b;
+    }
+    Option::from(pasta_curves::pallas::Base::from_repr(repr.into()))
+}
+
+fn load_wallet_into(pil: &mut Pil, wallet_path: &std::path::Path) {
+    if wallet_path.exists() {
+        let password = read_password("Wallet password: ");
+        match pil_client::Wallet::load_encrypted(wallet_path, password.as_bytes()) {
+            Ok(w) => {
+                pil.wallet = w;
+            }
+            Err(e) => eprintln!("Could not load wallet ({e}), using fresh wallet."),
+        }
+    }
 }
 
 fn save_wallet(pil: &Pil, path: &std::path::Path, password: &str) {
@@ -230,10 +253,13 @@ async fn main() {
                             }
                             "send" => {
                                 if parts.len() >= 3 {
-                                    let recipient = pasta_curves::pallas::Base::from(
-                                        u64::from_str_radix(parts[1].trim_start_matches("0x"), 16)
-                                            .unwrap_or(0),
-                                    );
+                                    let recipient = match parse_field_element(parts[1]) {
+                                        Some(r) => r,
+                                        None => {
+                                            println!("Invalid recipient hex public key.");
+                                            continue;
+                                        }
+                                    };
                                     if let Ok(amount) = parts[2].parse::<u64>() {
                                         match pil.send(recipient, amount) {
                                             Ok(r) => {
@@ -319,13 +345,22 @@ async fn main() {
         Commands::Deposit { amount, chain } => {
             let chain_domain = parse_chain(&chain);
             match Pil::init(chain_domain) {
-                Ok(mut pil) => match pil.deposit(amount) {
-                    Ok(r) => println!(
-                        "Deposited {amount}. Leaf: {}. Root: {:?}",
-                        r.leaf_index, r.root
-                    ),
-                    Err(e) => eprintln!("Error: {e}"),
-                },
+                Ok(mut pil) => {
+                    load_wallet_into(&mut pil, &wallet_path);
+                    match pil.deposit(amount) {
+                        Ok(r) => {
+                            println!(
+                                "Deposited {amount}. Leaf: {}. Root: {:?}",
+                                r.leaf_index, r.root
+                            );
+                            let pw = read_password("Wallet password to save: ");
+                            if !pw.is_empty() {
+                                save_wallet(&pil, &wallet_path, &pw);
+                            }
+                        }
+                        Err(e) => eprintln!("Error: {e}"),
+                    }
+                }
                 Err(e) => eprintln!("Init error: {e}"),
             }
         }
@@ -337,14 +372,25 @@ async fn main() {
             let chain_domain = parse_chain(&chain);
             match Pil::init(chain_domain) {
                 Ok(mut pil) => {
-                    let recipient_field = pasta_curves::pallas::Base::from(
-                        u64::from_str_radix(recipient.trim_start_matches("0x"), 16).unwrap_or(0),
-                    );
+                    load_wallet_into(&mut pil, &wallet_path);
+                    let recipient_field = match parse_field_element(&recipient) {
+                        Some(r) => r,
+                        None => {
+                            eprintln!("Invalid recipient hex public key.");
+                            return;
+                        }
+                    };
                     match pil.send(recipient_field, amount) {
-                        Ok(r) => println!(
-                            "Sent {amount}. Nullifiers spent: {}. New leaf indices: {:?}",
-                            r.nullifiers_spent, r.leaf_indices
-                        ),
+                        Ok(r) => {
+                            println!(
+                                "Sent {amount}. Nullifiers spent: {}. New leaf indices: {:?}",
+                                r.nullifiers_spent, r.leaf_indices
+                            );
+                            let pw = read_password("Wallet password to save: ");
+                            if !pw.is_empty() {
+                                save_wallet(&pil, &wallet_path, &pw);
+                            }
+                        }
                         Err(e) => eprintln!("Error: {e}"),
                     }
                 }
@@ -354,27 +400,40 @@ async fn main() {
         Commands::Withdraw { amount, chain } => {
             let chain_domain = parse_chain(&chain);
             match Pil::init(chain_domain) {
-                Ok(mut pil) => match pil.withdraw(amount) {
-                    Ok(r) => println!(
-                        "Withdrew {}. New leaf indices: {:?}",
-                        r.exit_value, r.leaf_indices
-                    ),
-                    Err(e) => eprintln!("Error: {e}"),
-                },
+                Ok(mut pil) => {
+                    load_wallet_into(&mut pil, &wallet_path);
+                    match pil.withdraw(amount) {
+                        Ok(r) => {
+                            println!(
+                                "Withdrew {}. New leaf indices: {:?}",
+                                r.exit_value, r.leaf_indices
+                            );
+                            let pw = read_password("Wallet password to save: ");
+                            if !pw.is_empty() {
+                                save_wallet(&pil, &wallet_path, &pw);
+                            }
+                        }
+                        Err(e) => eprintln!("Error: {e}"),
+                    }
+                }
                 Err(e) => eprintln!("Init error: {e}"),
             }
         }
         Commands::Balance { chain } => {
             let chain_domain = parse_chain(&chain);
             match Pil::init(chain_domain) {
-                Ok(pil) => println!("Balance: {}", pil.balance()),
+                Ok(mut pil) => {
+                    load_wallet_into(&mut pil, &wallet_path);
+                    println!("Balance: {}", pil.balance());
+                }
                 Err(e) => eprintln!("Init error: {e}"),
             }
         }
         Commands::Status { chain } => {
             let chain_domain = parse_chain(&chain);
             match Pil::init(chain_domain) {
-                Ok(pil) => {
+                Ok(mut pil) => {
+                    load_wallet_into(&mut pil, &wallet_path);
                     println!("Chain:          {:?}", chain_domain);
                     println!("Owner:          {}", pil.wallet.owner());
                     println!("Wallet balance: {}", pil.balance());
