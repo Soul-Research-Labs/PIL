@@ -44,6 +44,6 @@ pub mod ibc;
 pub mod msg;
 pub mod state;
 
-pub use contract::CosmosPrivacyPool;
+pub use contract::{CosmosPrivacyPool, NoopVerifier, ProofVerifier};
 pub use ibc::IBCEpochSync;
 pub use msg::{ExecuteMsg, InstantiateMsg, QueryMsg};

@@ -8,6 +8,25 @@ use ff::PrimeField;
 use pil_pool::PrivacyPool;
 use serde::{Deserialize, Serialize};
 
+/// Trait for ZK proof verification.
+///
+/// Implementors verify Groth16 proofs against the pool's public inputs.
+/// In production, this wraps `pil-verifier`. Defaults to rejecting all proofs
+/// to enforce that a proper verifier is always wired in.
+pub trait ProofVerifier: Send + Sync {
+    /// Verify a ZK proof for a transfer or withdrawal.
+    /// Returns Ok(()) if valid, Err with reason if invalid.
+    fn verify(&self, proof_bytes: &[u8], public_inputs: &[&[u8]]) -> Result<(), String>;
+}
+
+/// A no-op verifier that accepts all proofs (for testing only).
+pub struct NoopVerifier;
+impl ProofVerifier for NoopVerifier {
+    fn verify(&self, _proof_bytes: &[u8], _public_inputs: &[&[u8]]) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 /// High-level Cosmos privacy pool handler.
 ///
 /// In a real CosmWasm contract, this logic lives in the `execute` entry point.
@@ -19,10 +38,13 @@ pub struct CosmosPrivacyPool {
     pub pool: PrivacyPool,
     /// Remote epoch roots received via IBC for cross-chain verification.
     pub remote_epoch_roots: Vec<RemoteEpochRoot>,
+    /// Proof verifier for ZK proof validation.
+    proof_verifier: Box<dyn ProofVerifier>,
 }
 
 impl CosmosPrivacyPool {
-    /// Initialize a new privacy pool.
+    /// Initialize a new privacy pool with the default no-op verifier.
+    /// Production deployments must call `with_verifier` to set a real verifier.
     pub fn instantiate(msg: InstantiateMsg) -> Self {
         let config = PoolConfig {
             chain_domain_id: msg.chain_domain_id,
@@ -37,7 +59,14 @@ impl CosmosPrivacyPool {
             state: PoolState::default(),
             pool: PrivacyPool::new(),
             remote_epoch_roots: Vec::new(),
+            proof_verifier: Box::new(NoopVerifier),
         }
+    }
+
+    /// Set a real proof verifier (production use).
+    pub fn with_verifier(mut self, verifier: Box<dyn ProofVerifier>) -> Self {
+        self.proof_verifier = verifier;
+        self
     }
 
     /// Handle an execute message.
@@ -167,6 +196,14 @@ impl CosmosPrivacyPool {
         _domain_chain_id: u32,
         _domain_app_id: u32,
     ) -> Result<ExecuteResponse, ContractError> {
+        // Verify merkle root matches current state
+        let current_root = self.root_hex();
+        if _merkle_root != current_root {
+            return Err(ContractError::PoolError(format!(
+                "merkle root mismatch: expected {current_root}, got {_merkle_root}"
+            )));
+        }
+
         let nfs: Vec<pil_primitives::types::Nullifier> = nullifiers
             .iter()
             .map(|h| Self::hex_to_field(h).map(pil_primitives::types::Nullifier))
@@ -177,10 +214,21 @@ impl CosmosPrivacyPool {
             .map(|h| Self::hex_to_field(h).map(pil_primitives::types::Commitment))
             .collect::<Result<_, _>>()?;
 
-        // In production the ZK proof would be verified by pil-verifier
-        // before calling process_transfer. The proof bytes are forwarded
-        // so the pool can store them if needed.
         let proof_bytes = hex::decode(&_proof).map_err(|_| ContractError::InvalidHex)?;
+
+        // Verify ZK proof before mutating state
+        let null_bytes: Vec<Vec<u8>> = nullifiers.iter()
+            .map(|h| hex::decode(h).unwrap_or_default())
+            .collect();
+        let cm_bytes: Vec<Vec<u8>> = output_commitments.iter()
+            .map(|h| hex::decode(h).unwrap_or_default())
+            .collect();
+        let mut public_inputs: Vec<&[u8]> = Vec::new();
+        for b in &null_bytes { public_inputs.push(b); }
+        for b in &cm_bytes { public_inputs.push(b); }
+        self.proof_verifier
+            .verify(&proof_bytes, &public_inputs)
+            .map_err(|e| ContractError::PoolError(format!("proof verification failed: {e}")))?;
 
         let receipt = self
             .pool
@@ -203,6 +251,14 @@ impl CosmosPrivacyPool {
         exit_amount: u128,
         _recipient: String,
     ) -> Result<ExecuteResponse, ContractError> {
+        // Verify merkle root matches current state
+        let current_root = self.root_hex();
+        if _merkle_root != current_root {
+            return Err(ContractError::PoolError(format!(
+                "merkle root mismatch: expected {current_root}, got {_merkle_root}"
+            )));
+        }
+
         let nfs: Vec<pil_primitives::types::Nullifier> = nullifiers
             .iter()
             .map(|h| Self::hex_to_field(h).map(pil_primitives::types::Nullifier))
@@ -214,6 +270,20 @@ impl CosmosPrivacyPool {
             .collect::<Result<_, _>>()?;
 
         let proof_bytes = hex::decode(&_proof).map_err(|_| ContractError::InvalidHex)?;
+
+        // Verify ZK proof before mutating state
+        let null_bytes: Vec<Vec<u8>> = nullifiers.iter()
+            .map(|h| hex::decode(h).unwrap_or_default())
+            .collect();
+        let cm_bytes: Vec<Vec<u8>> = change_commitments.iter()
+            .map(|h| hex::decode(h).unwrap_or_default())
+            .collect();
+        let mut public_inputs: Vec<&[u8]> = Vec::new();
+        for b in &null_bytes { public_inputs.push(b); }
+        for b in &cm_bytes { public_inputs.push(b); }
+        self.proof_verifier
+            .verify(&proof_bytes, &public_inputs)
+            .map_err(|e| ContractError::PoolError(format!("proof verification failed: {e}")))?;
 
         // exit_amount is u128 from the message; the pool uses u64
         let exit_value = u64::try_from(exit_amount)
@@ -278,10 +348,15 @@ impl CosmosPrivacyPool {
         }
     }
 
+    /// Encode a field element root as a hex string (canonical repr).
+    fn root_hex(&self) -> String {
+        hex::encode(self.pool.root().to_repr())
+    }
+
     /// Sync cached PoolState from the underlying PrivacyPool.
     fn sync_state(&mut self) {
         self.state.note_count = self.pool.note_count();
-        self.state.merkle_root = hex::encode(format!("{:?}", self.pool.root()));
+        self.state.merkle_root = self.root_hex();
         self.state.pool_balance = self.pool.balance() as u128;
         self.state.nullifier_count = self.pool.nullifier_count() as u64;
     }
@@ -424,7 +499,7 @@ mod tests {
         let result = pool
             .execute(ExecuteMsg::Transfer {
                 proof: hex::encode([0u8; 32]),
-                merkle_root: "00".repeat(32),
+                merkle_root: pool.root_hex(),
                 nullifiers: vec![nf1, nf2],
                 output_commitments: vec![out],
                 domain_chain_id: 10,
@@ -460,7 +535,7 @@ mod tests {
         let result = pool
             .execute(ExecuteMsg::Withdraw {
                 proof: hex::encode([0u8; 32]),
-                merkle_root: "00".repeat(32),
+                merkle_root: pool.root_hex(),
                 nullifiers: vec![nf],
                 change_commitments: vec![],
                 exit_amount: 30,
@@ -491,7 +566,7 @@ mod tests {
 
         pool.execute(ExecuteMsg::Withdraw {
             proof: hex::encode([0u8; 32]),
-            merkle_root: "00".repeat(32),
+            merkle_root: pool.root_hex(),
             nullifiers: vec![nf.clone()],
             change_commitments: vec![],
             exit_amount: 10,
@@ -502,7 +577,7 @@ mod tests {
         // Same nullifier again → should fail
         let err = pool.execute(ExecuteMsg::Withdraw {
             proof: hex::encode([0u8; 32]),
-            merkle_root: "00".repeat(32),
+            merkle_root: pool.root_hex(),
             nullifiers: vec![nf],
             change_commitments: vec![],
             exit_amount: 10,
@@ -564,7 +639,7 @@ mod tests {
         // Spend it
         pool.execute(ExecuteMsg::Withdraw {
             proof: hex::encode([0u8; 32]),
-            merkle_root: "00".repeat(32),
+            merkle_root: pool.root_hex(),
             nullifiers: vec![nf_hex.clone()],
             change_commitments: vec![],
             exit_amount: 10,
