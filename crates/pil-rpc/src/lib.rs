@@ -9,6 +9,7 @@
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
+    middleware,
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
@@ -18,6 +19,7 @@ use pil_pool::{EpochManager, PrivacyPool};
 use pil_primitives::types::{Commitment, Nullifier};
 use pil_prover::ProvingKeys;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tokio::sync::RwLock;
@@ -75,7 +77,42 @@ pub fn create_router(state: Arc<RwLock<AppState>>) -> Router {
         .route("/epoch-roots", get(epoch_roots_handler))
         .route("/finalize-epoch", post(finalize_epoch_handler))
         .layer(cors)
+        .layer(middleware::from_fn(rate_limit_middleware))
         .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// Global rate limiter: simple per-second counter with atomic ops
+// ---------------------------------------------------------------------------
+
+/// Maximum requests per second (global across all endpoints).
+const MAX_REQUESTS_PER_SEC: u64 = 100;
+
+static RATE_LIMIT_COUNT: AtomicU64 = AtomicU64::new(0);
+static RATE_LIMIT_WINDOW: AtomicU64 = AtomicU64::new(0);
+
+async fn rate_limit_middleware(
+    req: axum::extract::Request,
+    next: middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let window = RATE_LIMIT_WINDOW.load(Ordering::Relaxed);
+    if now > window {
+        // New second window — reset counter
+        RATE_LIMIT_WINDOW.store(now, Ordering::Relaxed);
+        RATE_LIMIT_COUNT.store(1, Ordering::Relaxed);
+    } else {
+        let count = RATE_LIMIT_COUNT.fetch_add(1, Ordering::Relaxed);
+        if count >= MAX_REQUESTS_PER_SEC {
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+    }
+
+    Ok(next.run(req).await)
 }
 
 // ---------------------------------------------------------------------------
