@@ -199,6 +199,7 @@ impl Pil {
             fee: Value::known(Base::ZERO),
             merkle_siblings,
             merkle_indices,
+            domain_tag: Value::known(self.domain.to_domain_tag()),
         };
 
         // Generate ZK proof
@@ -252,10 +253,28 @@ impl Pil {
             .collect();
 
         let input_values: Vec<Base> = selected.iter().map(|n| Base::from(n.note.value)).collect();
+        let input_randomness: Vec<Base> = selected.iter().map(|n| n.note.randomness).collect();
+
+        // Retrieve Merkle authentication paths for input notes
+        let merkle_paths: Vec<_> = selected
+            .iter()
+            .map(|n| self.pool.authentication_path(n.leaf_index))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| PilError::Pool(e.to_string()))?;
         drop(selected);
 
         let change_note = Note::new(change, self.spending_key.owner(), 0);
         let change_cm = change_note.commitment();
+
+        // Build Merkle witness arrays from real paths
+        let mut merkle_siblings = [[Value::known(Base::ZERO); 32]; 2];
+        let mut merkle_indices = [Value::known(0u64); 2];
+        for (i, path) in merkle_paths.iter().enumerate().take(2) {
+            for (level, sibling) in path.siblings.iter().enumerate() {
+                merkle_siblings[i][level] = Value::known(*sibling);
+            }
+            merkle_indices[i] = Value::known(path.leaf_index);
+        }
 
         // Build withdraw circuit
         let circuit = WithdrawCircuit {
@@ -264,9 +283,26 @@ impl Pil {
                 Value::known(input_values.first().copied().unwrap_or(Base::ZERO)),
                 Value::known(input_values.get(1).copied().unwrap_or(Base::ZERO)),
             ],
+            input_randomness: [
+                Value::known(input_randomness.first().copied().unwrap_or(Base::ZERO)),
+                Value::known(input_randomness.get(1).copied().unwrap_or(Base::ZERO)),
+            ],
+            input_asset_ids: [Value::known(Base::ZERO); 2],
             output_values: [Value::known(Base::from(change)), Value::known(Base::ZERO)],
+            output_owners: [
+                Value::known(self.spending_key.owner()),
+                Value::known(Base::ZERO),
+            ],
+            output_randomness: [
+                Value::known(change_note.randomness),
+                Value::known(Base::ZERO),
+            ],
+            output_asset_ids: [Value::known(Base::ZERO); 2],
             exit_value: Value::known(Base::from(value)),
             fee: Value::known(Base::ZERO),
+            merkle_siblings,
+            merkle_indices,
+            domain_tag: Value::known(self.domain.to_domain_tag()),
         };
 
         // Generate ZK proof
@@ -387,6 +423,7 @@ impl Pil {
             fee: Value::known(Base::ZERO),
             merkle_siblings,
             merkle_indices,
+            domain_tag: Value::known(self.domain.to_domain_tag()),
         };
 
         let proof_bytes = pil_prover::prove_transfer(&self.keys, circuit, &[&[]])

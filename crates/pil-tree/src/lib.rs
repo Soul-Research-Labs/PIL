@@ -20,14 +20,17 @@ fn empty_hashes() -> [Base; TREE_DEPTH] {
     hashes
 }
 
-/// Incremental Merkle tree that only stores the frontier (right-most path).
+/// Incremental Merkle tree that stores the frontier and all leaves.
 ///
-/// This is memory-efficient: O(depth) storage instead of O(2^depth).
+/// The frontier enables O(depth) append operations.
+/// The leaves vector enables correct authentication paths for any leaf.
 /// Supports append-only operation matching the privacy pool's note insertion model.
 #[derive(Clone)]
 pub struct IncrementalMerkleTree {
     /// The frontier: one node per level on the path to the next empty leaf.
     frontier: [Base; TREE_DEPTH],
+    /// All inserted leaves, needed for authentication_path computation.
+    leaves: Vec<Base>,
     /// Number of leaves inserted so far.
     leaf_count: u64,
     /// Cached root (recomputed on each insertion).
@@ -45,6 +48,7 @@ impl IncrementalMerkleTree {
         }
         Self {
             frontier: [Base::ZERO; TREE_DEPTH],
+            leaves: Vec::new(),
             leaf_count: 0,
             root,
         }
@@ -56,6 +60,8 @@ impl IncrementalMerkleTree {
         if idx >= (1u64 << TREE_DEPTH) {
             return Err(TreeError::TreeFull);
         }
+
+        self.leaves.push(leaf);
 
         let empties = empty_hashes();
         let mut current = leaf;
@@ -91,9 +97,8 @@ impl IncrementalMerkleTree {
     /// Generate a Merkle authentication path for a given leaf index.
     /// Returns sibling hashes from leaf to root.
     ///
-    /// Note: This simplified version works correctly for the most recently
-    /// inserted subtrees. A full implementation would store all leaves
-    /// or use a different data structure.
+    /// Computes siblings by hashing pairs of leaves and intermediate nodes,
+    /// using empty hashes where a subtree has no inserted leaves.
     pub fn authentication_path(&self, leaf_idx: u64) -> Result<MerklePath, TreeError> {
         if leaf_idx >= self.leaf_count {
             return Err(TreeError::LeafNotFound(leaf_idx));
@@ -101,17 +106,52 @@ impl IncrementalMerkleTree {
 
         let empties = empty_hashes();
         let mut siblings = [Base::ZERO; TREE_DEPTH];
-        let mut index = leaf_idx;
+
+        // Build the tree layer by layer, collecting siblings
+        // Start with the leaves layer, padded with zeros
+        let mut current_layer: Vec<Base> = self.leaves.clone();
+        // Pad to even length with empty[0] = ZERO
+        if current_layer.len() % 2 != 0 {
+            current_layer.push(empties[0]);
+        }
+
+        let mut idx = leaf_idx as usize;
 
         for level in 0..TREE_DEPTH {
-            if index & 1 == 0 {
-                // We're the left child; sibling is on the right
-                siblings[level] = empties[level];
+            // The sibling of idx at this level
+            let sibling_idx = idx ^ 1;
+            siblings[level] = if sibling_idx < current_layer.len() {
+                current_layer[sibling_idx]
             } else {
-                // We're the right child; sibling is on the left (in frontier)
-                siblings[level] = self.frontier[level];
+                empties[level]
+            };
+
+            // Compute the next layer
+            let mut next_layer = Vec::with_capacity((current_layer.len() + 1) / 2);
+            let mut i = 0;
+            while i < current_layer.len() {
+                let left = current_layer[i];
+                let right = if i + 1 < current_layer.len() {
+                    current_layer[i + 1]
+                } else {
+                    empties[level]
+                };
+                next_layer.push(poseidon_hash2(left, right));
+                i += 2;
             }
-            index >>= 1;
+
+            // If next_layer is empty (shouldn't happen with a valid tree), push empty
+            if next_layer.is_empty() {
+                next_layer.push(empties[level]);
+            }
+
+            // Pad to even for next iteration
+            if next_layer.len() % 2 != 0 && level + 1 < TREE_DEPTH {
+                next_layer.push(empties[level + 1]);
+            }
+
+            current_layer = next_layer;
+            idx /= 2;
         }
 
         Ok(MerklePath {
